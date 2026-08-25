@@ -1,9 +1,10 @@
-"""Login CIEC al SAT: portal → POST credencial → WS-Fed → portalcfdi."""
+"""Login CIEC al SAT: /nidp/app/login → POST credencial → WS-Fed → portalcfdi."""
 
 from __future__ import annotations
 
 import base64
 import re
+import threading
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urljoin
@@ -12,10 +13,16 @@ from satmasivo.http import sat_session
 from satmasivo.sat_ws import SatError
 
 PORTAL = "https://portalcfdi.facturaelectronica.sat.gob.mx/"
-LOGIN_POST = (
+AUTH_LOGIN = (
+    "https://cfdiau.sat.gob.mx/nidp/app/login"
+    "?id=SATUPCFDiCon&sid=0&option=credential&sid=0"
+)
+AUTH_CIEC = (
     "https://cfdiau.sat.gob.mx/nidp/wsfed/ep"
     "?id=SATUPCFDiCon&sid=0&option=credential&sid=0"
 )
+# (connect, read). El handshake del SAT a veces no corta con un solo int.
+TIMEOUT = (8, 30)
 CAPTCHA_RE = re.compile(
     r"data:image/(?:jpeg|jpg|png|gif);base64,([A-Za-z0-9+/=\s]+)",
     re.I,
@@ -72,17 +79,18 @@ class _FormParser(HTMLParser):
 
 
 def parse_auto_form(html: str) -> tuple[str, str, dict[str, str]] | None:
+    """Solo el form federado (wresult/SAML). Un `wa` suelto no cuenta."""
     p = _FormParser()
     p.feed(html or "")
     p.finish()
     for action, method, fields in p.forms:
         names = {n.lower() for n in fields}
-        if "wresult" in names or "wa" in names or "samlresponse" in names:
+        if "wresult" in names or "samlresponse" in names:
             return action, method, fields
     return None
 
 
-def logged_in_portal(html: str, final_url: str) -> bool:
+def logged_in_portal(html: str, final_url: str, rfc: str = "") -> bool:
     url = (final_url or "").lower()
     if "cfdiau.sat.gob.mx" in url or "/nidp/" in url:
         return False
@@ -90,10 +98,14 @@ def logged_in_portal(html: str, final_url: str) -> bool:
         return False
     if looks_like_login(html):
         return False
-    low = (html or "").lower()
-    if "rfc" in low and "contraseña" in low and "captcha" in low:
-        return False
-    return True
+    text = html or ""
+    if rfc and f"RFC Autenticado: {rfc}" in text:
+        return True
+    if "RFC Autenticado:" in text:
+        return True
+    if "logout.aspx" in text.lower():
+        return True
+    return "ConsultaReceptor" in text or "ConsultaEmisor" in text or "cfdi" in text.lower()
 
 
 @dataclass
@@ -103,70 +115,83 @@ class CiecClient:
 
     def __post_init__(self) -> None:
         self.sess = sat_session(insecure=True)
+        self._lock = threading.Lock()
 
     def start(self) -> bytes:
-        r = self.sess.get(PORTAL, timeout=18, allow_redirects=True)
-        if not looks_like_login(r.text):
-            r = self.sess.get(LOGIN_POST, timeout=18, allow_redirects=True)
-        if not looks_like_login(r.text):
-            raise SatError(
-                f"El SAT no entregó el login ({r.status_code}, {len(r.content)} bytes)."
-            )
-        self.captcha = extract_captcha(r.text)
-        return self.captcha
-
-    def _follow_wsfed(self, html: str, current_url: str) -> None:
-        for _ in range(3):
-            parsed = parse_auto_form(html)
-            if not parsed:
-                break
-            action, method, fields = parsed
-            if not action:
-                break
-            url = urljoin(current_url, action)
-            if method == "get":
-                r = self.sess.get(url, params=fields, timeout=18, allow_redirects=True)
-            else:
-                r = self.sess.post(url, data=fields, timeout=18, allow_redirects=True)
-            html = r.text
-            current_url = r.url
-            if logged_in_portal(html, current_url):
-                return
-        r = self.sess.get(PORTAL, timeout=18, allow_redirects=True)
-        if not logged_in_portal(r.text, r.url):
-            if looks_like_login(r.text):
+        with self._lock:
+            last = None
+            for url in (AUTH_LOGIN, AUTH_CIEC, PORTAL):
                 try:
-                    self.captcha = extract_captcha(r.text)
-                except SatError:
-                    self.captcha = b""
-                raise SatError("RFC, contraseña o captcha incorrectos.")
-            raise SatError(
-                "El SAT aceptó el login pero no abrió el portal. "
-                "Reintenta Home o usa e.firma."
-            )
+                    r = self.sess.get(url, timeout=TIMEOUT, allow_redirects=True)
+                    last = r
+                    if looks_like_login(r.text):
+                        self.captcha = extract_captcha(r.text)
+                        return self.captcha
+                except Exception as exc:
+                    last = exc
+                    continue
+            if last is not None and hasattr(last, "text"):
+                raise SatError(
+                    f"El SAT no entregó el login ({last.status_code}, {len(last.content)} bytes)."
+                )
+            raise SatError(f"El SAT no respondió el login: {last}")
+
+    def _post_wsfed_once(self, html: str, current_url: str) -> tuple[str, str]:
+        parsed = parse_auto_form(html)
+        if not parsed:
+            return html, current_url
+        action, method, fields = parsed
+        if not action:
+            return html, current_url
+        url = urljoin(current_url, action)
+        if method == "get":
+            r = self.sess.get(url, params=fields, timeout=TIMEOUT, allow_redirects=True)
+        else:
+            r = self.sess.post(url, data=fields, timeout=TIMEOUT, allow_redirects=True)
+        return r.text, r.url
 
     def login(self, rfc: str, password: str, captcha: str) -> str:
         rfc = rfc.strip().upper()
-        r = self.sess.post(
-            LOGIN_POST,
-            data={
-                "option": "credential",
-                "Ecom_User_ID": rfc,
-                "Ecom_Password": password,
-                "userCaptcha": captcha.strip(),
-            },
-            timeout=18,
-            allow_redirects=True,
-        )
-        if looks_like_login(r.text):
-            try:
-                self.captcha = extract_captcha(r.text)
-            except SatError:
-                self.captcha = b""
-            raise SatError("RFC, contraseña o captcha incorrectos.")
-        self._follow_wsfed(r.text, r.url)
-        self.rfc = rfc
-        return rfc
+        with self._lock:
+            r = self.sess.post(
+                AUTH_LOGIN,
+                data={
+                    "option": "credential",
+                    "submit": "Enviar",
+                    "Ecom_User_ID": rfc,
+                    "Ecom_Password": password,
+                    "userCaptcha": captcha.strip(),
+                },
+                timeout=TIMEOUT,
+                allow_redirects=True,
+            )
+            html, url = r.text, r.url
+            if looks_like_login(html):
+                try:
+                    self.captcha = extract_captcha(html)
+                except SatError:
+                    self.captcha = b""
+                raise SatError("RFC, contraseña o captcha incorrectos.")
+            html, url = self._post_wsfed_once(html, url)
+            if not logged_in_portal(html, url, rfc):
+                try:
+                    pr = self.sess.get(PORTAL, timeout=TIMEOUT, allow_redirects=True)
+                    html, url = pr.text, pr.url
+                    html, url = self._post_wsfed_once(html, url)
+                except Exception as exc:
+                    raise SatError(f"El SAT no cerró el login: {exc}") from exc
+            if not logged_in_portal(html, url, rfc):
+                if looks_like_login(html):
+                    try:
+                        self.captcha = extract_captcha(html)
+                    except SatError:
+                        self.captcha = b""
+                    raise SatError("RFC, contraseña o captcha incorrectos.")
+                raise SatError(
+                    "El SAT aceptó el login pero no abrió el portal. Reintenta Home."
+                )
+            self.rfc = rfc
+            return rfc
 
     def cookie_tuples(self) -> list[tuple[str, str, str, str]]:
         out: list[tuple[str, str, str, str]] = []

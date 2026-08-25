@@ -99,6 +99,7 @@ def test_parse_wsfed_form():
     parsed2 = parse_auto_form(two)
     assert parsed2 is not None
     assert parsed2[2]["wresult"] == "tok"
+    assert parse_auto_form('<form><input name="wa" value="wsignin1.0"></form>') is None
 
 
 def test_html_from_delta():

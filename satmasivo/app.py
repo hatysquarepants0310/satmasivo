@@ -139,6 +139,7 @@ class SatMasivoApp(tk.Tk):
         self._last_lote = Path(prev) if prev else None
         self.ciec = CiecClient()
         self._logged_rfc = ""
+        self._login_busy = False
         self._captcha_photo = None
         self._build()
         self._mark("home")
@@ -300,18 +301,34 @@ class SatMasivoApp(tk.Tk):
         if not rfc or not pwd or not cap:
             self.lbl_login.configure(text="Llena RFC, contraseña y captcha.")
             return
+        if getattr(self, "_login_busy", False):
+            self.lbl_login.configure(text="Ya se está intentando entrar.")
+            return
+        self._login_busy = True
         self.lbl_login.configure(text="Entrando al SAT…")
+        done = {"ok": False}
 
         def work():
             try:
                 got = self.ciec.login(rfc, pwd, cap)
+                done["ok"] = True
                 self._ui(self._login_ok, got)
             except Exception as exc:
+                done["ok"] = True
                 self._ui(self._login_fail, str(exc))
 
+        def watchdog():
+            if not done["ok"]:
+                self._login_busy = False
+                self.lbl_login.configure(
+                    text="El SAT no respondió a tiempo. Pulsa Enviar otra vez."
+                )
+
         threading.Thread(target=work, daemon=True).start()
+        self.after(45000, watchdog)
 
     def _login_ok(self, rfc: str) -> None:
+        self._login_busy = False
         self._logged_rfc = rfc
         self.ent_pwd.delete(0, tk.END)
         self.ent_cap.delete(0, tk.END)
@@ -320,6 +337,7 @@ class SatMasivoApp(tk.Tk):
         messagebox.showinfo("Sesión SAT", f"Entraste como {rfc}. Ya puedes Descargar.")
 
     def _login_fail(self, msg: str) -> None:
+        self._login_busy = False
         self.lbl_login.configure(text=msg)
         if self.ciec.captcha:
             self._show_captcha(self.ciec.captcha, "")
