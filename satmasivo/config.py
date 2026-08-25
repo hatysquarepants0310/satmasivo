@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "satmasivo"
+
+def _config_dir() -> Path:
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "satmasivo"
+    return Path.home() / ".config" / "satmasivo"
+
+
+CONFIG_DIR = _config_dir()
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
@@ -23,4 +31,7 @@ def save_config(data: dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     clean = {k: v for k, v in data.items() if k not in {"ciec", "password", "fiel_password", "key_password"}}
     CONFIG_PATH.write_text(json.dumps(clean, indent=2) + "\n", encoding="utf-8")
-    CONFIG_PATH.chmod(0o600)
+    try:
+        CONFIG_PATH.chmod(0o600)
+    except OSError:
+        pass

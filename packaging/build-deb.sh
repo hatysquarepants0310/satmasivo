@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-VER="${1:-1.0.0}"
+VER="${1:-1.4.0}"
 STAGE="$ROOT/packaging/pkg"
 PKG="$STAGE/satmasivo"
 rm -rf "$STAGE"
@@ -19,11 +19,10 @@ Version: $VER
 Section: office
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.11), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil
+Depends: python3 (>= 3.11), python3-tk, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil
 Maintainer: Daniel <hatysquarepants0310@users.noreply.github.com>
-Description: Descarga masiva de CFDI del SAT para Ubuntu
- Cliente de escritorio para bajar, validar y reportar CFDI
- usando el Web Service oficial y el login SAT embebido.
+Description: Descarga masiva de CFDI del SAT
+ Cliente de escritorio (Ubuntu .deb / Windows .exe).
 EOF
 
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
@@ -44,10 +43,7 @@ find "$PKG/usr/lib/satmasivo" -type d -name '__pycache__' -prune -exec rm -rf {}
 
 cat > "$PKG/usr/bin/satmasivo" <<'EOF'
 #!/usr/bin/python3
-import os
 import sys
-os.environ["G_TLS_GNUTLS_PRIORITY"] = "NORMAL:%COMPAT:%PROFILE_VERY_WEAK"
-os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 sys.path.insert(0, "/usr/lib/satmasivo")
 from satmasivo.__main__ import main
 if __name__ == "__main__":
