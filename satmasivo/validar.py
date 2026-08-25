@@ -10,7 +10,7 @@ from satmasivo.cfdi import CfdiRow
 from satmasivo.http import sat_session
 
 CONSULTA = "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc/json/Consulta"
-_HTTP = sat_session()
+_HTTP = sat_session(insecure=True)
 
 
 def consultar_estatus(row: CfdiRow, timeout: float = 20.0) -> CfdiRow:

@@ -508,6 +508,8 @@ class SatMasivoApp(tk.Tk):
             try:
                 msg = fn()
                 self._ui(self._done, True, msg)
+            except SatError as exc:
+                self._ui(self._done, False, str(exc))
             except Exception as exc:
                 self._ui(self._done, False, f"{exc}\n\n{traceback.format_exc()}")
 

@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form
-from satmasivo.portal import extract_download_targets, looks_like_xml, logged_in
+from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, looks_like_xml, logged_in, parse_sat_delta
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -8,6 +8,7 @@ def test_extract_uuids_and_recupera():
     html = """
     <html><body>
     <a href="RecuperaCfdi.aspx?folioFiscal=11111111-2222-3333-4444-555555555555">xml</a>
+    <span onclick="return AccionCfdi('RecuperaCfdi.aspx?Datos=abc','Recuperacion');">dl</span>
     <span>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</span>
     <a href="javascript:void(0)">x</a>
     </body></html>
@@ -16,6 +17,20 @@ def test_extract_uuids_and_recupera():
     assert "11111111-2222-3333-4444-555555555555" in uuids
     assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in uuids
     assert any("RecuperaCfdi" in h for h in hrefs)
+    assert any("Datos=abc" in h for h in hrefs)
+
+
+def test_parse_sat_delta_and_dates():
+    raw = "|3|hiddenField|__FOO|foo|88|hiddenField|__VIEWSTATE|VIEWSTATEOK|"
+    assert parse_sat_delta(raw)["__VIEWSTATE"] == "VIEWSTATEOK"
+    rec = date_filters("recibidas", __import__("datetime").date(2026, 3, 20))
+    assert rec["ctl00$MainContent$CldFecha$DdlAnio"] == "2026"
+    assert rec["ctl00$MainContent$CldFecha$DdlMes"] == "3"
+    assert rec["ctl00$MainContent$CldFecha$DdlDia"] == "20"
+    emi = date_filters("emitidas", __import__("datetime").date(2026, 3, 1), __import__("datetime").date(2026, 3, 31))
+    assert emi["ctl00$MainContent$CldFechaInicial2$Calendario_text"] == "01/03/2026"
+    assert emi["ctl00$MainContent$CldFechaFinal2$Calendario_text"] == "31/03/2026"
+    assert extract_accion_urls("return AccionCfdi('foo.aspx?x=1','Recuperacion');")[0].endswith("foo.aspx?x=1")
 
 
 def test_logged_in_detects_login_page():
