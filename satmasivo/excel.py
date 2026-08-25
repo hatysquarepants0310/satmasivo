@@ -1,179 +1,400 @@
-"""Excel al estilo Masiva erpDOZ + hojas de ingresos/egresos."""
+"""Excel al layout de Masiva erpDOZ: Resumen / Ingresos / Pagos."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from satmasivo.cfdi import CfdiRow
+from satmasivo.cfdi import CfdiRow, format_fecha_masiva, regimen_label
 
-# Orden y nombres documentados por erpDOZ (Softonic + erpdoz.com).
-# Extra al final: lo que pidió la firma y no sale en ese listado.
-COLUMNS = [
-    ("fecha", "Fecha"),
-    ("tipo_documento", "Tipo de Documento"),
-    ("rfc_receptor", "RFC Receptor"),
-    ("rfc_emisor", "RFC Emisor"),
-    ("nombre_emisor", "Nombre del Emisor"),
-    ("nombre_receptor", "Nombre del Receptor"),
-    ("serie", "Serie"),
-    ("folio", "Folio"),
-    ("uuid", "UUID"),
-    ("moneda", "Moneda"),
-    ("tipo_cambio", "Tipo de cambio"),
-    ("subtotal", "Sub Total"),
-    ("impuestos_trasladados", "Impuestos trasladados"),
-    ("iva_trasladado", "IVA"),
-    ("ieps_trasladado", "IEPS"),
-    ("iva_retenido", "Impuestos retenidos IVA"),
-    ("isr_retenido", "ISR"),
-    ("descuento", "Descuento"),
-    ("total", "Total"),
-    ("estatus_sat", "Vigente"),
-    ("forma_pago", "Forma de pago"),
-    ("metodo_pago", "Método de pago"),
-    ("uso_cfdi", "Uso CFDI"),
-    ("complemento_pago", "Complemento de pago"),
-    ("ieps_retenido", "IEPS retenido"),
-    ("impuestos_retenidos", "Impuestos retenidos"),
-    ("cancelable", "Cancelable"),
-    ("estatus_cancelacion", "Estatus cancelación"),
-    ("archivo", "Archivo"),
+# Encabezados idénticos al Excel de Masiva (PaoloMzoJun26.xlsx).
+RESUMEN_COLS = [
+    "COUNT",
+    "FECHA",
+    "TIPO",
+    "RFC_REC",
+    "RECEPTOR",
+    "recDomFiscal",
+    "recRegimenFiscal",
+    "UsoCFDI",
+    "RFC_EMI",
+    "EMISOR",
+    "LugarExpedicion",
+    "RegimenFiscal",
+    "SERIE",
+    "FOLIO",
+    "UUID",
+    "METODOPAGO",
+    "NUMCTAPAGO",
+    "FORMAPAGO",
+    "MONEDA",
+    "TIPOCAMBIO",
+    "SUBTOTAL",
+    "IMPUESTOSTRAS",
+    "IMPUESTOSTRASIVA",
+    "IMPUESTOSTRASIEPS",
+    "IMPUESTOSRETE",
+    "IMPUESTOSRETIVA",
+    "IMPUESTOSRETISR",
+    "DESCUENTOS",
+    "TOTAL",
+    "ImpLocalTotalRet",
+    "ImpLocalTotalTras",
+    "ImpLocalDetRets",
+    "ImpLocalDetTras",
+    "PRIMERCONCEPTO",
+    "ESTADO",
+    "RFCEmisorCancelado",
+    "RFCEmisorCompleto",
+    "RFCReceptorCancelado",
+    "RFCReceptorCompleto",
 ]
 
-MASIVA_TITLES = [
-    "Fecha",
-    "Tipo de Documento",
-    "RFC Receptor",
-    "RFC Emisor",
-    "Nombre del Emisor",
-    "Nombre del Receptor",
+INGRESOS_COLS = [
+    "Versión",
+    "UUID",
     "Serie",
     "Folio",
-    "UUID",
-    "Moneda",
-    "Tipo de cambio",
-    "Sub Total",
-    "Impuestos trasladados",
-    "IVA",
-    "IEPS",
-    "Impuestos retenidos IVA",
-    "ISR",
+    "Fecha",
+    "FormaPago",
+    "CondicionesDePago",
+    "SubTotal",
     "Descuento",
+    "ImpTrasladados",
+    "ImpRetenidos",
     "Total",
-    "Vigente",
+    "TipoCambio",
+    "Moneda",
+    "TipoComprobante",
+    "MétodoPago",
+    "LugarExpedicion",
+    "Confirmacion",
+    "TipoRelacion",
+    "CfdiRelacionados",
+    "EmisorRFC",
+    "EmisorNombre",
+    "RégimenFiscal",
+    "ReceptorRFC",
+    "ReceptorNombre",
+    "ReceptorUsoCFDi",
+    "ReceptorResidencia",
+    "ReceptorIdTrib",
+    "ClaveProdServ",
+    "NoIdentificacion",
+    "Cantidad",
+    "ClaveUnidad",
+    "Unidad",
+    "Descripcion",
+    "ValorUnitario",
+    "Importe",
+    "DescuentoConcepto",
+    "BaseTrasIVATEX",
+    "TrasIVATEX",
+    "BaseTrasIVAT00",
+    "TrasIVAT00",
+    "BaseTrasIVAT08",
+    "TrasIVAT08",
+    "BaseIEPST0080",
+    "IEPST0080",
+    "BaseTrasIVAT16",
+    "TrasIVAT16",
+    "BaseRetIVA",
+    "RetIVA",
+    "BaseRetISR",
+    "RetISR",
+    "Traslados",
+    "Retenciones",
+    "NúmPedimento",
+    "CtaPredial",
 ]
 
+PAGOS_COLS = [
+    "UUID",
+    "Folio",
+    "Serie",
+    "Fecha",
+    "EmisorRFC",
+    "Emisor",
+    "EmisorRégimen",
+    "ReceptorRFC",
+    "Receptor",
+    "FormaDePago",
+    "FechaDePago",
+    "NúmOperación",
+    "TipoDecambio",
+    "Monto",
+    "Moneda",
+    "NúmParcialidad",
+    "UUIDpag",
+    "FolioPag",
+    "SeriePag",
+    "MonedaPag",
+    "TC Pag",
+    "SaldoAnt",
+    "Pago",
+    "SaldoInsoluto",
+]
+
+MASIVA_TITLES = RESUMEN_COLS
+
 HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
-HEADER_FONT = Font(color="FFFFFF", bold=True, name="Calibri", size=10)
+HEADER_FONT = Font(color="FFFFFF", bold=True, name="Calibri", size=9)
+BODY_FONT = Font(name="Calibri", size=9)
 MONEY = "#,##0.00"
-THIN = Border(
-    left=Side(style="thin", color="BDD7EE"),
-    right=Side(style="thin", color="BDD7EE"),
-    top=Side(style="thin", color="BDD7EE"),
-    bottom=Side(style="thin", color="BDD7EE"),
-)
-ZEBRA = PatternFill("solid", fgColor="D6EAF8")
-MONEY_KEYS = {
-    "subtotal",
-    "descuento",
-    "iva_trasladado",
-    "ieps_trasladado",
-    "impuestos_trasladados",
-    "iva_retenido",
-    "isr_retenido",
-    "ieps_retenido",
-    "impuestos_retenidos",
-    "total",
-    "tipo_cambio",
-}
 
 
-def _write_sheet(ws: Worksheet, rows: list[CfdiRow]) -> None:
+def _blank(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value == "":
+        return None
+    return value
+
+
+def _money(value):
+    if value is None:
+        return None
+    try:
+        if float(value) == 0:
+            return 0
+    except (TypeError, ValueError):
+        return value
+    return float(value)
+
+
+def _estado(row: CfdiRow) -> str:
+    est = (row.estatus_sat or "").strip()
+    if not est:
+        return ""
+    if est.lower().startswith("comprobante"):
+        return est
+    return f"Estado:{est}"
+
+
+def _write_header(ws: Worksheet, titles: list[str]) -> None:
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
-    for col, (_, title) in enumerate(COLUMNS, 1):
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(titles))}1"
+    for col, title in enumerate(titles, 1):
         cell = ws.cell(1, col, title)
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.row_dimensions[1].height = 30
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws.row_dimensions[1].height = 22
+
+
+def _put(ws: Worksheet, r: int, values: list, money_idx: set[int] | None = None) -> None:
+    money_idx = money_idx or set()
+    for c, val in enumerate(values, 1):
+        cell = ws.cell(r, c, _blank(val))
+        cell.font = BODY_FONT
+        if c in money_idx and isinstance(val, (int, float)):
+            cell.number_format = MONEY
+
+
+def _resumen_row(n: int, row: CfdiRow) -> list:
+    return [
+        n,
+        format_fecha_masiva(row.fecha),
+        row.tipo_comprobante,
+        row.rfc_receptor,
+        row.nombre_receptor,
+        row.rec_dom_fiscal,
+        regimen_label(row.rec_regimen),
+        row.uso_cfdi,
+        row.rfc_emisor,
+        row.nombre_emisor,
+        row.lugar_expedicion,
+        regimen_label(row.regimen_fiscal),
+        row.serie,
+        row.folio,
+        row.uuid,
+        row.metodo_pago,
+        row.num_cta_pago,
+        row.forma_pago,
+        row.moneda,
+        row.tipo_cambio or None,
+        _money(row.subtotal),
+        _money(row.impuestos_trasladados) if row.impuestos_trasladados else None,
+        _money(row.iva_trasladado),
+        _money(row.ieps_trasladado),
+        _money(row.impuestos_retenidos) if row.impuestos_retenidos else None,
+        _money(row.iva_retenido),
+        _money(row.isr_retenido),
+        _money(row.descuento) if row.descuento else None,
+        _money(row.total),
+        _money(row.imp_local_ret),
+        _money(row.imp_local_tras),
+        row.imp_local_det_ret or None,
+        row.imp_local_det_tras or None,
+        row.primer_concepto,
+        _estado(row),
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def _ingresos_cfdi_prefix(row: CfdiRow) -> list:
+    return [
+        row.version,
+        row.uuid,
+        row.serie,
+        row.folio,
+        format_fecha_masiva(row.fecha),
+        row.forma_pago,
+        row.condiciones_pago or None,
+        _money(row.subtotal),
+        _money(row.descuento) if row.descuento else None,
+        _money(row.impuestos_trasladados) if row.impuestos_trasladados else None,
+        _money(row.impuestos_retenidos) if row.impuestos_retenidos else None,
+        _money(row.total),
+        row.tipo_cambio or None,
+        row.moneda,
+        row.tipo_comprobante,
+        row.metodo_pago,
+        row.lugar_expedicion,
+        row.confirmacion or None,
+        row.tipo_relacion or None,
+        row.cfdi_relacionados or None,
+        row.rfc_emisor,
+        row.nombre_emisor,
+        f"Item{row.regimen_fiscal}" if row.regimen_fiscal else None,
+        row.rfc_receptor,
+        row.nombre_receptor,
+        row.uso_cfdi,
+        row.rec_residencia or None,
+        row.rec_num_reg_trib or None,
+    ]
+
+
+def _concepto_suffix(c) -> list:
+    return [
+        c.clave_prod,
+        c.no_id or None,
+        c.cantidad or None,
+        c.clave_unidad or None,
+        c.unidad or None,
+        c.descripcion,
+        _money(c.valor_unitario),
+        _money(c.importe),
+        _money(c.descuento),
+        _money(c.base_iva_exento) or None,
+        _money(c.iva_exento) or None,
+        _money(c.base_iva_0) or None,
+        _money(c.iva_0) or None,
+        _money(c.base_iva_8) or None,
+        _money(c.iva_8) or None,
+        _money(c.base_ieps) or None,
+        _money(c.ieps) or None,
+        _money(c.base_iva_16) or None,
+        _money(c.iva_16) or None,
+        _money(c.base_ret_iva) or None,
+        _money(c.ret_iva) or None,
+        _money(c.base_ret_isr) or None,
+        _money(c.ret_isr) or None,
+        None,
+        None,
+        c.pedimento or None,
+        c.predial or None,
+    ]
+
+
+def _write_resumen(ws: Worksheet, rows: list[CfdiRow]) -> None:
+    _write_header(ws, RESUMEN_COLS)
     ordered = sorted(rows, key=lambda r: (r.fecha, r.uuid))
-    for r_i, row in enumerate(ordered, 2):
-        data = row.as_excel()
-        for c_i, (key, _) in enumerate(COLUMNS, 1):
-            cell = ws.cell(r_i, c_i, data.get(key, ""))
-            cell.border = THIN
-            cell.alignment = Alignment(vertical="center")
-            if r_i % 2 == 0:
-                cell.fill = ZEBRA
-            if key in MONEY_KEYS and cell.value != "":
-                cell.number_format = MONEY
-    widths = {
-        "A": 20,
-        "B": 18,
-        "C": 16,
-        "D": 16,
-        "E": 32,
-        "F": 32,
-        "I": 38,
-        "S": 14,
-        "T": 16,
-        "AC": 40,
-    }
-    for col in range(1, len(COLUMNS) + 1):
-        letter = get_column_letter(col)
-        ws.column_dimensions[letter].width = widths.get(letter, 16)
+    money = {21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+    for i, row in enumerate(ordered, 1):
+        _put(ws, i + 1, _resumen_row(i, row), money)
+    ws.column_dimensions["B"].width = 24
+    ws.column_dimensions["E"].width = 32
+    ws.column_dimensions["J"].width = 32
+    ws.column_dimensions["O"].width = 38
+    ws.column_dimensions["AH"].width = 36
 
 
-def _split(rows: list[CfdiRow], rfc_firma: str | None) -> dict[str, list[CfdiRow]]:
-    ingresos: list[CfdiRow] = []
-    egresos: list[CfdiRow] = []
-    pagos: list[CfdiRow] = []
-    otros: list[CfdiRow] = []
-    rfc = (rfc_firma or "").upper()
-    for row in rows:
+def _write_ingresos(ws: Worksheet, rows: list[CfdiRow]) -> None:
+    _write_header(ws, INGRESOS_COLS)
+    r = 2
+    money = set(range(8, 13)) | set(range(35, 52))
+    for row in sorted(rows, key=lambda x: (x.fecha, x.uuid)):
         if row.tipo_comprobante == "P":
-            pagos.append(row)
-        elif rfc and row.rfc_emisor.upper() == rfc:
-            ingresos.append(row)
-        elif rfc and row.rfc_receptor.upper() == rfc:
-            egresos.append(row)
-        elif row.tipo_comprobante == "I":
-            ingresos.append(row)
-        elif row.tipo_comprobante == "E":
-            egresos.append(row)
-        else:
-            otros.append(row)
-    return {
-        "Reporte": rows,
-        "Ingresos": ingresos,
-        "Egresos": egresos,
-        "Pagos": pagos,
-        "Otros": otros,
-    }
+            continue
+        prefix = _ingresos_cfdi_prefix(row)
+        conceptos = row.conceptos or [None]
+        first = True
+        for c in conceptos:
+            if first:
+                values = prefix + (_concepto_suffix(c) if c else [None] * 27)
+                first = False
+            else:
+                values = [None] * 28 + _concepto_suffix(c)
+            _put(ws, r, values, money)
+            r += 1
+    ws.column_dimensions["B"].width = 38
+    ws.column_dimensions["AH"].width = 36
+
+
+def _write_pagos(ws: Worksheet, rows: list[CfdiRow]) -> None:
+    _write_header(ws, PAGOS_COLS)
+    r = 2
+    money = {14, 22, 23, 24}
+    for row in sorted(rows, key=lambda x: (x.fecha, x.uuid)):
+        if row.tipo_comprobante != "P" and not row.pagos:
+            continue
+        pagos = row.pagos or [None]
+        for p in pagos:
+            _put(
+                ws,
+                r,
+                [
+                    row.uuid,
+                    row.folio,
+                    row.serie,
+                    format_fecha_masiva(row.fecha),
+                    row.rfc_emisor,
+                    row.nombre_emisor,
+                    regimen_label(row.regimen_fiscal),
+                    row.rfc_receptor,
+                    row.nombre_receptor,
+                    p.forma_pago if p else None,
+                    format_fecha_masiva(p.fecha_pago) if p else None,
+                    p.num_operacion if p else None,
+                    p.tipo_cambio if p else None,
+                    _money(p.monto) if p else None,
+                    p.moneda if p else None,
+                    p.num_parcialidad if p else None,
+                    p.uuid_dr if p else None,
+                    p.folio_dr if p else None,
+                    p.serie_dr if p else None,
+                    p.moneda_dr if p else None,
+                    p.tc_dr if p else None,
+                    _money(p.saldo_ant) if p else None,
+                    _money(p.pago) if p else None,
+                    _money(p.saldo_insoluto) if p else None,
+                ],
+                money,
+            )
+            r += 1
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["F"].width = 32
+    ws.column_dimensions["Q"].width = 38
 
 
 def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = None) -> Path:
+    del rfc_firma
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    groups = _split(rows, rfc_firma)
     wb = Workbook()
-    first = True
-    for name, data in groups.items():
-        if first:
-            ws = wb.active
-            if ws is None:
-                ws = wb.create_sheet(name)
-            else:
-                ws.title = name
-            first = False
-        else:
-            ws = wb.create_sheet(name)
-        _write_sheet(ws, data)
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Resumen"
+    _write_resumen(ws, rows)
+    _write_ingresos(wb.create_sheet("Ingresos"), rows)
+    _write_pagos(wb.create_sheet("Pagos"), rows)
     wb.save(path)
     return path

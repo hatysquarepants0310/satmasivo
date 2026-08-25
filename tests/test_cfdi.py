@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from satmasivo.cfdi import parse_cfdi, scan_folder
-from satmasivo.excel import export_excel
+from satmasivo.cfdi import format_fecha_masiva, parse_cfdi, scan_folder
+from satmasivo.excel import RESUMEN_COLS, export_excel
 from satmasivo.pdf import cfdi_to_pdf
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -17,6 +17,9 @@ def test_parse_ingreso():
     assert row.total == 1160
     assert row.forma_pago == "03"
     assert row.complemento_pago == "No"
+    assert row.lugar_expedicion == "55700"
+    assert row.primer_concepto == "Servicio"
+    assert len(row.conceptos) == 1
 
 
 def test_parse_pago():
@@ -25,21 +28,23 @@ def test_parse_pago():
     assert row.complemento_pago == "Sí"
 
 
+def test_fecha_masiva():
+    assert format_fecha_masiva("2026-03-20T14:01:40") == "20/03/2026 02:01:40 p. m."
+    assert format_fecha_masiva("2026-03-20T09:06:47") == "20/03/2026 09:06:47 a. m."
+
+
 def test_scan_and_excel(tmp_path):
     from openpyxl import load_workbook
-
-    from satmasivo.excel import MASIVA_TITLES
 
     rows = scan_folder(FIXTURES)
     assert len(rows) == 2
     dest = tmp_path / "out.xlsx"
     export_excel(rows, dest, rfc_firma="EKU9003173C9")
     wb = load_workbook(dest)
-    assert wb.sheetnames[0] == "Reporte"
-    headers = [c.value for c in wb["Reporte"][1]]
-    assert headers[: len(MASIVA_TITLES)] == MASIVA_TITLES
-    assert "Ingresos" in wb.sheetnames
-    assert "Egresos" in wb.sheetnames
+    assert wb.sheetnames == ["Resumen", "Ingresos", "Pagos"]
+    headers = [c.value for c in wb["Resumen"][1]]
+    assert headers == RESUMEN_COLS
+    assert wb["Resumen"]["C2"].value in {"I", "P"}
 
 
 def test_pdf(tmp_path):

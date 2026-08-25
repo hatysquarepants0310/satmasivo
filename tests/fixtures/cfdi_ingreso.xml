@@ -5,8 +5,8 @@
     SubTotal="1000.00" Descuento="0.00" Total="1160.00"
     Moneda="MXN" TipoCambio="1" TipoDeComprobante="I"
     FormaPago="03" MetodoPago="PUE" LugarExpedicion="55700">
-  <cfdi:Emisor Rfc="EKU9003173C9" Nombre="ESCUELA KEMPER URGATE"/>
-  <cfdi:Receptor Rfc="XAXX010101000" Nombre="PUBLICO EN GENERAL" UsoCFDI="G03"/>
+  <cfdi:Emisor Rfc="EKU9003173C9" Nombre="ESCUELA KEMPER URGATE" RegimenFiscal="601"/>
+  <cfdi:Receptor Rfc="XAXX010101000" Nombre="PUBLICO EN GENERAL" UsoCFDI="G03" DomicilioFiscalReceptor="55700" RegimenFiscalReceptor="616"/>
   <cfdi:Conceptos>
     <cfdi:Concepto ClaveProdServ="01010101" Cantidad="1" ClaveUnidad="E48"
         Descripcion="Servicio" ValorUnitario="1000.00" Importe="1000.00"/>
