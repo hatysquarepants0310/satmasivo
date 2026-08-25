@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
+
+SPECDIR = os.path.dirname(os.path.abspath(SPEC))
+ROOT = os.path.abspath(os.path.join(SPECDIR, ".."))
 
 hidden = collect_submodules("satmasivo")
 hidden += [
@@ -15,8 +20,8 @@ hidden += [
 ]
 
 a = Analysis(
-    ["satmasivo/__main__.py"],
-    pathex=["."],
+    [os.path.join(ROOT, "satmasivo", "__main__.py")],
+    pathex=[ROOT],
     binaries=[],
     datas=[],
     hiddenimports=hidden,
@@ -37,13 +42,8 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    upx=False,
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
 )
