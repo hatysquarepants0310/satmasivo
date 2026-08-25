@@ -398,12 +398,19 @@ def descargar_con_sesion(
     sess=None,
     fecha_ini: str = "",
     fecha_fin: str = "",
+    progress=None,
 ) -> list[Path]:
     dest.mkdir(parents=True, exist_ok=True)
+
+    def note(**ev) -> None:
+        if progress:
+            progress(ev)
+
     if sess is None:
         if not cookies:
             raise SatError("La ventana no entregó cookies del SAT. Recarga e inicia sesión.")
         sess = session_from_cookies(cookies)
+    note(phase="consulta", msg="Abriendo consulta SAT…", done=0, total=1)
     html0 = probe_session(sess, sentido).replace("charset=utf-16", "charset=utf-8")
     url = CONSULTA.get(sentido, CONSULTA["recibidas"])
     fields = parse_form(html0)
@@ -415,11 +422,33 @@ def descargar_con_sesion(
     hrefs: list[str] = []
     last_html = ""
     days = _days(fecha_ini, fecha_fin)
-    for day in days:
+    ndays = len(days)
+    for i, day in enumerate(days, 1):
+        note(
+            phase="consulta",
+            day=str(day),
+            day_i=i,
+            days=ndays,
+            done=i,
+            total=ndays,
+            found=len(uuids),
+            msg=f"Buscando {day}  ({i}/{ndays})",
+        )
         extra = date_filters(sentido, day, day)
         u, h, last_html, fields = _search_once(sess, url, fields, extra)
         uuids.extend(u)
         hrefs.extend(h)
+        if u or h:
+            note(
+                phase="consulta",
+                day=str(day),
+                day_i=i,
+                days=ndays,
+                done=i,
+                total=ndays,
+                found=len(u),
+                msg=f"{day}: {len(u)} UUID, {len(h)} ligas",
+            )
 
     if extra_html:
         u2, h2 = extract_download_targets(extra_html)
@@ -431,22 +460,47 @@ def descargar_con_sesion(
     hrefs = list(dict.fromkeys(hrefs))
 
     written: list[Path] = []
+    have: set[str] = set()
+    jobs = list(hrefs) + [f"uuid:{u}" for u in uuids]
+    total_jobs = max(len(jobs), 1)
+    done = 0
     for href in hrefs:
+        done += 1
         got = download_url(sess, href, dest)
+        uid = got.stem.upper() if got else ""
         if got:
             written.append(got)
-    have = {p.stem.upper() for p in written}
+            have.add(uid)
+        note(
+            phase="xml",
+            done=done,
+            total=total_jobs,
+            uuid=uid,
+            ok=bool(got),
+            msg=f"XML {done}/{total_jobs}" + (f"  {uid}" if uid else ""),
+        )
     for uuid in uuids:
+        done += 1
         if uuid.upper() in have:
+            note(phase="xml", done=done, total=total_jobs, uuid=uuid, ok=True, msg=f"Ya estaba {uuid}")
             continue
         got = recover_by_uuid(sess, uuid, dest)
         if got:
             written.append(got)
             have.add(uuid.upper())
+        note(
+            phase="xml",
+            done=done,
+            total=total_jobs,
+            uuid=uuid,
+            ok=bool(got),
+            msg=f"XML {done}/{total_jobs}  {uuid}",
+        )
     if not written:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
             f"Sesión SAT viva, pero el portal no soltó XML "
             f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
         )
+    note(phase="listo", done=len(written), total=len(written), msg=f"{len(written)} XML listos")
     return written

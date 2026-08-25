@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
-from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, query_filters
+from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -133,6 +133,12 @@ def test_extract_captcha_and_live_start():
 
     png = _png_bytes(img)
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_descarga_acepta_progress():
+    import inspect
+
+    assert "progress" in inspect.signature(descargar_con_sesion).parameters
 
 
 

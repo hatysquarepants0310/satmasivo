@@ -179,18 +179,32 @@ class SatMasivoApp(tk.Tk):
         self.pages.add(self.page_work, text="Lote")
         self._hide_tabs()
         self._build_login(self.page_home)
+        self._build_work(self.page_work)
+
+        self.status = tk.StringVar(value="Home — login SAT")
+        tk.Label(self, textvariable=self.status, anchor="w", bg="#f3f3f3").pack(fill=tk.X, side=tk.BOTTOM)
+
+    def _build_work(self, parent: tk.Widget) -> None:
         self.lbl_work = tk.Label(
-            self.page_work,
+            parent,
             text="",
             bg="white",
             fg="#0b3d61",
             font=("Segoe UI", 14),
             justify=tk.CENTER,
         )
-        self.lbl_work.pack(expand=True)
-
-        self.status = tk.StringVar(value="Home — login SAT")
-        tk.Label(self, textvariable=self.status, anchor="w", bg="#f3f3f3").pack(fill=tk.X, side=tk.BOTTOM)
+        self.lbl_work.pack(fill=tk.X, pady=(16, 4))
+        self.var_prog = tk.StringVar(value="")
+        tk.Label(parent, textvariable=self.var_prog, bg="white", fg="#333", font=("Segoe UI", 10)).pack()
+        self.bar = ttk.Progressbar(parent, maximum=100, mode="determinate")
+        self.bar.pack(fill=tk.X, padx=24, pady=8)
+        box = tk.Frame(parent, bg="white")
+        box.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 12))
+        scroll = ttk.Scrollbar(box)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.lst_prog = tk.Listbox(box, font=("Consolas", 9), yscrollcommand=scroll.set, activestyle="none")
+        self.lst_prog.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.configure(command=self.lst_prog.yview)
 
     def _hide_tabs(self) -> None:
         try:
@@ -269,6 +283,46 @@ class SatMasivoApp(tk.Tk):
 
     def _ui(self, fn, *args) -> None:
         self.after(0, lambda: fn(*args))
+
+    def _reset_prog(self, title: str) -> None:
+        try:
+            self.pages.tab(self.page_work, state="normal")
+        except tk.TclError:
+            try:
+                self.pages.add(self.page_work, text="Lote")
+            except tk.TclError:
+                pass
+        try:
+            self.pages.select(self.page_work)
+        except tk.TclError:
+            pass
+        self.lbl_work.configure(text=title)
+        self.var_prog.set("0%")
+        self.bar.configure(mode="determinate", maximum=100, value=0)
+        self.lst_prog.delete(0, tk.END)
+
+    def _prog(self, ev: dict) -> None:
+        msg = str(ev.get("msg") or "")
+        done = int(ev.get("done") or 0)
+        total = int(ev.get("total") or 0)
+        if total > 0:
+            pct = min(100, int(100 * done / total))
+            self.bar.configure(mode="determinate", maximum=total, value=done)
+            self.var_prog.set(f"{pct}%   {msg}")
+        else:
+            self.var_prog.set(msg)
+        uid = str(ev.get("uuid") or "")
+        if uid or ev.get("phase") in {"xml", "validar"}:
+            mark = "OK" if ev.get("ok", True) else "--"
+            line = f"{mark}  {uid}  {msg}".strip()
+            self.lst_prog.insert(tk.END, line)
+            if self.lst_prog.size() > 800:
+                self.lst_prog.delete(0, 200)
+            self.lst_prog.see(tk.END)
+        self.status.set(msg or self.var_prog.get())
+
+    def _on_progress(self, ev: dict) -> None:
+        self._ui(self._prog, dict(ev))
 
     def _reload_captcha(self) -> None:
         if self._login_busy:
@@ -476,11 +530,13 @@ class SatMasivoApp(tk.Tk):
                 if not args["cer"] or not args["key"] or not args["pwd"]:
                     messagebox.showerror("Error", "Para e.firma hacen falta .cer, .key y contraseña.")
                     return
+                self._reset_prog(f"e.firma · {args['sentido']}")
                 self._run_bg("Descargando por e.firma…", lambda: self._job_descarga_fiel(args))
                 return
             if not self._logged_rfc:
                 messagebox.showerror("Error", "Entra en Home primero.")
                 return
+            self._reset_prog(f"Sesión {self._logged_rfc} · {args['sentido']}")
             self._run_bg("Descargando con sesión SAT…", lambda: self._job_descarga_ciec(args))
 
         ttk.Button(win, text="Descargar", command=ok).pack(pady=10)
@@ -584,6 +640,14 @@ class SatMasivoApp(tk.Tk):
         for _ in range(90):
             last = client.verificar(sol.id_solicitud)
             self._ui(self.status.set, f"{last.estado_nombre} · {last.numero_cfdis} CFDI")
+            self._on_progress(
+                {
+                    "phase": "consulta",
+                    "done": min(_ + 1, 90),
+                    "total": 90,
+                    "msg": f"{last.estado_nombre} · {last.numero_cfdis} CFDI",
+                }
+            )
             if last.estado == 3:
                 break
             if last.estado in {4, 5, 6}:
@@ -605,6 +669,7 @@ class SatMasivoApp(tk.Tk):
             dest=dest,
             fecha_ini=args["ini"],
             fecha_fin=args["fin"],
+            progress=self._on_progress,
         )
         return self._finish_rows(
             dest, args["validar"], self._logged_rfc, extra=f"{len(files)} XML por sesión SAT\n"
@@ -614,7 +679,20 @@ class SatMasivoApp(tk.Tk):
         self._remember_lote(dest)
         rows = scan_folder(dest)
         if validar and rows:
-            rows = validar_rows(rows)
+
+            def on_val(i, total, uuid):
+                self._on_progress(
+                    {
+                        "phase": "validar",
+                        "done": i,
+                        "total": total,
+                        "uuid": uuid,
+                        "ok": True,
+                        "msg": f"Validando {i}/{total}",
+                    }
+                )
+
+            rows = validar_rows(rows, progress=on_val)
         if rows:
             export_excel(rows, dest / "reporte.xlsx", rfc_firma=rfc)
         return f"{extra}{len(rows)} comprobantes\n{dest}"
