@@ -34,8 +34,8 @@ AJAX_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
 }
-XML_WORKERS = 3
-XML_RETRIES = 4
+XML_WORKERS = 10
+XML_WAVES = 40
 PAGE_RE = re.compile(r"__doPostBack\(\s*'([^']+)'\s*,\s*'Page\$(\d+)'")
 
 
@@ -514,74 +514,81 @@ def descargar_con_sesion(
     uuids = list(dict.fromkeys(uuids))
     hrefs = list(dict.fromkeys(hrefs))
     jobs = plan_xml_jobs(hrefs, uuids)
-    total_jobs = max(len(jobs), 1)
+    total_jobs = len(jobs)
     written: list[Path] = []
     have: set[str] = set()
     lock = threading.Lock()
-    done = 0
 
-    def try_job(job: tuple[str, str]) -> Path | None:
+    def already(job: tuple[str, str]) -> Path | None:
         kind, payload = job
-        for attempt in range(XML_RETRIES):
-            worker = clone_session(sess)
-            try:
-                got = download_url(worker, payload, dest) if kind == "href" else recover_by_uuid(worker, payload, dest)
-                if got:
-                    return got
-            except Exception:
-                got = None
-            finally:
-                worker.close()
-            time.sleep(0.5 * (attempt + 1))
+        if kind == "uuid":
+            p = dest / f"{payload.upper()}.xml"
+            return p if p.is_file() else None
+        found = UUID_RE.search(payload)
+        if found:
+            p = dest / f"{found.group(0).upper()}.xml"
+            return p if p.is_file() else None
         return None
 
-    workers = min(XML_WORKERS, max(len(jobs), 1))
-    note(phase="xml", done=0, total=total_jobs, msg=f"Bajando {len(jobs)} XML × {workers} hilos")
+    def try_once(job: tuple[str, str]) -> Path | None:
+        got = already(job)
+        if got:
+            return got
+        kind, payload = job
+        worker = clone_session(sess)
+        try:
+            return download_url(worker, payload, dest) if kind == "href" else recover_by_uuid(worker, payload, dest)
+        except Exception:
+            return None
+        finally:
+            worker.close()
+
     pending = list(jobs)
-    if pending:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(try_job, job): job for job in pending}
-            failed: list[tuple[str, str]] = []
-            for fut in as_completed(futures):
-                job = futures[fut]
-                got = fut.result()
-                with lock:
-                    if got:
-                        done += 1
-                        written.append(got)
-                        have.add(got.stem.upper())
-                        note(
-                            phase="xml",
-                            done=done,
-                            total=total_jobs,
-                            uuid=got.stem.upper(),
-                            ok=True,
-                            msg=f"XML {done}/{total_jobs}  {got.stem.upper()}",
-                        )
-                    else:
-                        failed.append(job)
-            pending = failed
-    if pending:
-        note(phase="xml", done=done, total=total_jobs, msg=f"Reintento lento de {len(pending)} XML")
-        for job in pending:
-            got = try_job(job)
-            done += 1
-            uid = got.stem.upper() if got else job[1][:36]
-            if got:
-                written.append(got)
-            note(
-                phase="xml",
-                done=min(done, total_jobs),
-                total=total_jobs,
-                uuid=uid if got else "",
-                ok=bool(got),
-                msg=f"XML {len(written)}/{total_jobs}" + (f"  {uid}" if got else "  (falló)"),
-            )
-    if not written:
+    if not pending:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
             f"Sesión SAT viva, pero el portal no soltó XML "
             f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
         )
-    note(phase="listo", done=len(written), total=len(written), msg=f"{len(written)} XML listos")
+    note(phase="xml", done=0, total=total_jobs, msg=f"Detectados {total_jobs}. Bajando de 10 en 10 hasta el 100%.")
+    wave = 0
+    while pending and wave < XML_WAVES:
+        wave += 1
+        workers = min(XML_WORKERS, len(pending))
+        note(
+            phase="xml",
+            done=len(written),
+            total=total_jobs,
+            msg=f"Oleada {wave}: {len(written)}/{total_jobs} listos, {len(pending)} pendientes × {workers}",
+        )
+        failed: list[tuple[str, str]] = []
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(try_once, job): job for job in pending}
+            for fut in as_completed(futures):
+                job = futures[fut]
+                got = fut.result()
+                with lock:
+                    if got:
+                        if got.stem.upper() not in have:
+                            written.append(got)
+                            have.add(got.stem.upper())
+                        note(
+                            phase="xml",
+                            done=len(written),
+                            total=total_jobs,
+                            uuid=got.stem.upper(),
+                            ok=True,
+                            msg=f"{len(written)}/{total_jobs}  {got.stem.upper()}",
+                        )
+                    else:
+                        failed.append(job)
+        pending = failed
+        if pending:
+            time.sleep(min(8.0, 1.0 * wave))
+    if pending:
+        raise SatError(
+            f"Se detectaron {total_jobs} y solo bajaron {len(written)}. "
+            f"Quedan {len(pending)}. Reintenta Descargar (los que ya están no se pisan)."
+        )
+    note(phase="listo", done=len(written), total=total_jobs, msg=f"{len(written)}/{total_jobs} XML listos")
     return written
