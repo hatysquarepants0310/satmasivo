@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 import threading
 import traceback
 from datetime import date, datetime
@@ -691,6 +692,11 @@ class SatMasivoApp(tk.Tk):
 
     def _job_descarga_ciec(self, args: dict) -> str:
         dest = self._ensure_session_dir(args["dest"], self._logged_rfc) / args["sentido"]
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "rango.json").write_text(
+            json.dumps({"ini": args["ini"], "fin": args["fin"]}),
+            encoding="utf-8",
+        )
         files = descargar_con_sesion(
             sess=self.ciec.sess,
             sentido=args["sentido"],

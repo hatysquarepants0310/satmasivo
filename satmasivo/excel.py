@@ -98,8 +98,6 @@ INGRESOS_COLS = [
     "TrasIVAT00",
     "BaseTrasIVAT08",
     "TrasIVAT08",
-    "BaseIEPST0080",
-    "IEPST0080",
     "BaseTrasIVAT16",
     "TrasIVAT16",
     "BaseRetIVA",
@@ -238,13 +236,13 @@ def _resumen_row(n: int, row: CfdiRow) -> list:
         _money_tipo(row, row.impuestos_retenidos) if row.impuestos_retenidos else None,
         _money_tipo(row, row.iva_retenido),
         _money_tipo(row, row.isr_retenido),
-        _money(row.descuento) if row.descuento else 0,
+        _money(row.descuento) if row.descuento else None,
         _money_tipo(row, row.total),
         _money(row.imp_local_ret),
         _money(row.imp_local_tras),
         row.imp_local_det_ret or None,
         row.imp_local_det_tras or None,
-        row.primer_concepto,
+        row.texto_conceptos or None,
         _estado(row),
         "No listado",
         "No listado",
@@ -303,8 +301,6 @@ def _concepto_suffix(c) -> list:
         _money(c.iva_0) or None,
         _money(c.base_iva_8) or None,
         _money(c.iva_8) or None,
-        _money(c.base_ieps) or None,
-        _money(c.ieps) or None,
         _money(c.base_iva_16) or None,
         _money(c.iva_16) or None,
         _money(c.base_ret_iva) or None,
@@ -343,7 +339,7 @@ def _write_conceptos(ws: Worksheet, rows: list[CfdiRow], tipos: set[str]) -> Non
         first = True
         for c in conceptos:
             if first:
-                values = prefix + (_concepto_suffix(c) if c else [None] * 27)
+                values = prefix + (_concepto_suffix(c) if c else [None] * 25)
                 first = False
             else:
                 values = [None] * 28 + _concepto_suffix(c)

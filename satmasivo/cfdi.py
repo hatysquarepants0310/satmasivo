@@ -232,9 +232,14 @@ class CfdiRow:
 
     @property
     def primer_concepto(self) -> str:
-        if not self.conceptos:
-            return "Pago" if self.tipo_comprobante == "P" else ""
-        return self.conceptos[0].descripcion
+        return self.texto_conceptos.split("\n", 1)[0] if self.texto_conceptos else ""
+
+    @property
+    def texto_conceptos(self) -> str:
+        parts = [c.descripcion.strip() for c in self.conceptos if c.descripcion and str(c.descripcion).strip()]
+        if parts:
+            return "\n".join(parts)
+        return "Pago" if self.tipo_comprobante == "P" else ""
 
 
 def _impuestos(node: etree._Element | None) -> dict[str, Decimal]:
@@ -506,12 +511,65 @@ def parse_cfdi(path: str | Path) -> CfdiRow:
     return row
 
 
-def scan_folder(folder: str | Path) -> list[CfdiRow]:
+def scan_folder(folder: str | Path, fecha_ini: str = "", fecha_fin: str = "") -> list[CfdiRow]:
     root = Path(folder)
+    ini = _parse_bound(fecha_ini)
+    fin = _parse_bound(fecha_fin)
     rows: list[CfdiRow] = []
     for xml in sorted(root.rglob("*.xml")):
         try:
-            rows.append(parse_cfdi(xml))
+            row = parse_cfdi(xml)
         except Exception:
             continue
+        lo, hi = _rango_cerca(xml, root)
+        if ini:
+            lo = ini
+        if fin:
+            hi = fin
+        day = _row_day(row)
+        if lo and day and day < lo:
+            continue
+        if hi and day and day > hi:
+            continue
+        rows.append(row)
     return rows
+
+
+def _parse_bound(text: str):
+    text = (text or "").strip()[:10]
+    if not text:
+        return None
+    from datetime import datetime as _dt
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return _dt.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _row_day(row: CfdiRow):
+    raw = (row.fecha or "")[:10]
+    from datetime import datetime as _dt
+    try:
+        return _dt.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _rango_cerca(xml: Path, root: Path):
+    import json
+    cur = xml.parent
+    root = root.resolve()
+    for _ in range(4):
+        f = cur / "rango.json"
+        if f.is_file():
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+            return _parse_bound(str(data.get("ini") or "")), _parse_bound(str(data.get("fin") or ""))
+        if cur.resolve() == root or cur.parent == cur:
+            break
+        cur = cur.parent
+    return None, None

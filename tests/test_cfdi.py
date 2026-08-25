@@ -114,3 +114,24 @@ def test_export_excel_otra_ruta(tmp_path):
     assert out.parent == dest.parent
 
 
+def test_ingresos_53_columnas():
+    from satmasivo.excel import INGRESOS_COLS
+
+    assert len(INGRESOS_COLS) == 53
+    assert "BaseIEPST0080" not in INGRESOS_COLS
+
+
+def test_scan_respeta_rango(tmp_path):
+    import json
+    import shutil
+
+    dest = tmp_path / "emitidas"
+    dest.mkdir()
+    shutil.copy(FIXTURES / "cfdi_ingreso.xml", dest / "a.xml")
+    (dest / "rango.json").write_text(json.dumps({"ini": "2026-07-01", "fin": "2026-07-31"}), encoding="utf-8")
+    assert scan_folder(dest) == []
+    (dest / "rango.json").write_text(json.dumps({"ini": "2026-01-01", "fin": "2026-01-31"}), encoding="utf-8")
+    assert len(scan_folder(dest)) == 1
+
+
+

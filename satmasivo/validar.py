@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from xml.etree import ElementTree as ET
 
@@ -10,7 +11,7 @@ from satmasivo.http import sat_session
 
 SOAP_URL = "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc"
 SOAP_ACTION = "http://tempuri.org/IConsultaCFDIService/Consulta"
-_HTTP = sat_session(insecure=True)
+SOAP_WORKERS = 6
 
 NS = {
     "s": "http://schemas.xmlsoap.org/soap/envelope/",
@@ -57,38 +58,57 @@ def parse_consulta_xml(xml: str) -> dict[str, str]:
     return out
 
 
-def consultar_estatus(row: CfdiRow, timeout: float = 25.0) -> CfdiRow:
+def consultar_estatus(row: CfdiRow, timeout: float = 8.0) -> CfdiRow:
     if not row.uuid or not row.rfc_emisor or not row.rfc_receptor:
         row.estatus_sat = ""
         return row
     expr = expresion_impresa(row)
-    try:
-        r = _HTTP.post(
-            SOAP_URL,
-            data=_soap_body(expr),
-            headers={
-                "Content-Type": "text/xml; charset=utf-8",
-                "SOAPAction": SOAP_ACTION,
-            },
-            timeout=timeout,
-        )
-        r.raise_for_status()
-        data = parse_consulta_xml(r.text)
-    except Exception:
-        row.estatus_sat = ""
-        return row
-    row.estatus_sat = data.get("Estado") or ""
-    row.codigo_estatus = data.get("CodigoEstatus") or ""
-    row.cancelable = data.get("EsCancelable") or ""
-    row.estatus_cancelacion = data.get("EstatusCancelacion") or ""
+    last_err = None
+    for _ in range(2):
+        try:
+            http = sat_session(insecure=True)
+            r = http.post(
+                SOAP_URL,
+                data=_soap_body(expr),
+                headers={
+                    "Content-Type": "text/xml; charset=utf-8",
+                    "SOAPAction": SOAP_ACTION,
+                },
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            data = parse_consulta_xml(r.text)
+            row.estatus_sat = data.get("Estado") or ""
+            row.codigo_estatus = data.get("CodigoEstatus") or ""
+            row.cancelable = data.get("EsCancelable") or ""
+            row.estatus_cancelacion = data.get("EstatusCancelacion") or ""
+            return row
+        except Exception as exc:
+            last_err = exc
+            continue
+    del last_err
+    row.estatus_sat = ""
     return row
 
 
 def validar_rows(rows: list[CfdiRow], progress=None) -> list[CfdiRow]:
-    out: list[CfdiRow] = []
     total = len(rows)
-    for i, row in enumerate(rows, 1):
-        out.append(consultar_estatus(row))
-        if progress:
-            progress(i, total, row.uuid)
-    return out
+    if total == 0:
+        return []
+    out: list[CfdiRow | None] = [None] * total
+    done = 0
+    workers = min(SOAP_WORKERS, total)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(consultar_estatus, row): i for i, row in enumerate(rows)}
+        for fut in as_completed(futs):
+            i = futs[fut]
+            try:
+                out[i] = fut.result()
+            except Exception:
+                out[i] = rows[i]
+            done += 1
+            if progress:
+                got = out[i]
+                uid = got.uuid if got is not None else rows[i].uuid
+                progress(done, total, uid)
+    return [r if r is not None else rows[i] for i, r in enumerate(out)]
