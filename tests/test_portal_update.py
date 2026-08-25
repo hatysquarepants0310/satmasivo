@@ -67,6 +67,10 @@ def test_extract_captcha_and_live_start():
     assert extract_captcha(html) == b"hello"
     img = CiecClient().start()
     assert len(img) > 80
+    from satmasivo.app import _png_bytes
+
+    png = _png_bytes(img)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 

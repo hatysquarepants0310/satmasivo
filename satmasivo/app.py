@@ -27,6 +27,25 @@ from satmasivo.validar import validar_rows
 BLUE = "#0078D4"
 
 
+def _png_bytes(data: bytes) -> bytes:
+    """JPEG/GIF/etc → PNG. El SAT manda JPEG; tk.PhotoImage no lee JPEG."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return data
+    from PIL import Image
+
+    im = Image.open(BytesIO(data))
+    if im.mode not in {"RGB", "RGBA", "L", "P"}:
+        im = im.convert("RGB")
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _photo_from_bytes(data: bytes) -> tk.PhotoImage:
+    """Pinta el captcha sin python3-pil.imagetk (ImageTk no viene en python3-pil)."""
+    return tk.PhotoImage(data=_png_bytes(data))
+
+
 class SatMasivoApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -188,11 +207,9 @@ class SatMasivoApp(tk.Tk):
             self.lbl_login.configure(text=err)
             return
         try:
-            from PIL import Image, ImageTk
-
-            im = Image.open(BytesIO(data))
-            self._captcha_photo = ImageTk.PhotoImage(im)
-            self.img_cap.configure(image=self._captcha_photo, width=im.width, height=im.height)
+            photo = _photo_from_bytes(data)
+            self._captcha_photo = photo
+            self.img_cap.configure(image=photo, width=photo.width(), height=photo.height())
             self.lbl_login.configure(text="")
         except Exception as exc:
             self.lbl_login.configure(text=f"No se pudo pintar el captcha: {exc}")

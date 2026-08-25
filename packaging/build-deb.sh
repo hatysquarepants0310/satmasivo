@@ -19,7 +19,7 @@ Version: $VER
 Section: office
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.11), python3-tk, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil
+Depends: python3 (>= 3.11), python3-tk, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil, python3-pil.imagetk
 Maintainer: Daniel <hatysquarepants0310@users.noreply.github.com>
 Description: Descarga masiva de CFDI del SAT
  Cliente de escritorio (Ubuntu .deb / Windows .exe).
