@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
-from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_result_pages, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
+from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_folio_map, extract_result_pages, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -155,6 +155,20 @@ def test_extract_result_pages():
     pages = extract_result_pages(html)
     assert ("ctl00$MainContent$gvCfdi", "2") in pages
     assert ("ctl00$MainContent$gvCfdi", "3") in pages
+
+
+def test_extract_folio_map_one_per_row():
+    html = """
+    <table>
+    <tr><td>11111111-2222-3333-4444-555555555555</td>
+        <td><span onclick="return AccionCfdi('RecuperaCfdi.aspx?Datos=aaa','Recuperacion');"></span></td></tr>
+    <tr><td>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</td><td>sin boton</td></tr>
+    </table>
+    """
+    fmap = extract_folio_map(html)
+    assert fmap["11111111-2222-3333-4444-555555555555"].endswith("Datos=aaa")
+    assert "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE" not in fmap
+
 
 
 
