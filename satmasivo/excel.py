@@ -1,4 +1,4 @@
-"""Excel ordenado: ingresos, egresos y todo."""
+"""Excel al estilo Masiva erpDOZ + hojas de ingresos/egresos."""
 
 from __future__ import annotations
 
@@ -7,54 +7,93 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
 from satmasivo.cfdi import CfdiRow
 
+# Orden y nombres documentados por erpDOZ (Softonic + erpdoz.com).
+# Extra al final: lo que pidió la firma y no sale en ese listado.
 COLUMNS = [
-    ("uuid", "UUID"),
     ("fecha", "Fecha"),
-    ("tipo_documento", "Tipo de documento"),
-    ("rfc_emisor", "RFC emisor"),
-    ("nombre_emisor", "Nombre emisor"),
-    ("rfc_receptor", "RFC receptor"),
-    ("nombre_receptor", "Nombre receptor"),
+    ("tipo_documento", "Tipo de Documento"),
+    ("rfc_receptor", "RFC Receptor"),
+    ("rfc_emisor", "RFC Emisor"),
+    ("nombre_emisor", "Nombre del Emisor"),
+    ("nombre_receptor", "Nombre del Receptor"),
     ("serie", "Serie"),
     ("folio", "Folio"),
+    ("uuid", "UUID"),
     ("moneda", "Moneda"),
     ("tipo_cambio", "Tipo de cambio"),
-    ("subtotal", "Subtotal"),
-    ("descuento", "Descuento"),
-    ("iva_trasladado", "IVA trasladado"),
-    ("ieps_trasladado", "IEPS trasladado"),
+    ("subtotal", "Sub Total"),
     ("impuestos_trasladados", "Impuestos trasladados"),
-    ("iva_retenido", "IVA retenido"),
-    ("isr_retenido", "ISR retenido"),
-    ("ieps_retenido", "IEPS retenido"),
-    ("impuestos_retenidos", "Impuestos retenidos"),
+    ("iva_trasladado", "IVA"),
+    ("ieps_trasladado", "IEPS"),
+    ("iva_retenido", "Impuestos retenidos IVA"),
+    ("isr_retenido", "ISR"),
+    ("descuento", "Descuento"),
     ("total", "Total"),
+    ("estatus_sat", "Vigente"),
     ("forma_pago", "Forma de pago"),
     ("metodo_pago", "Método de pago"),
     ("uso_cfdi", "Uso CFDI"),
     ("complemento_pago", "Complemento de pago"),
-    ("estatus_sat", "Estatus SAT"),
+    ("ieps_retenido", "IEPS retenido"),
+    ("impuestos_retenidos", "Impuestos retenidos"),
     ("cancelable", "Cancelable"),
     ("estatus_cancelacion", "Estatus cancelación"),
     ("archivo", "Archivo"),
 ]
 
-HEADER_FILL = PatternFill("solid", fgColor="0B3D91")
+MASIVA_TITLES = [
+    "Fecha",
+    "Tipo de Documento",
+    "RFC Receptor",
+    "RFC Emisor",
+    "Nombre del Emisor",
+    "Nombre del Receptor",
+    "Serie",
+    "Folio",
+    "UUID",
+    "Moneda",
+    "Tipo de cambio",
+    "Sub Total",
+    "Impuestos trasladados",
+    "IVA",
+    "IEPS",
+    "Impuestos retenidos IVA",
+    "ISR",
+    "Descuento",
+    "Total",
+    "Vigente",
+]
+
+HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 HEADER_FONT = Font(color="FFFFFF", bold=True, name="Calibri", size=10)
 MONEY = "#,##0.00"
 THIN = Border(
-    left=Side(style="thin", color="D0D5DD"),
-    right=Side(style="thin", color="D0D5DD"),
-    top=Side(style="thin", color="D0D5DD"),
-    bottom=Side(style="thin", color="D0D5DD"),
+    left=Side(style="thin", color="BDD7EE"),
+    right=Side(style="thin", color="BDD7EE"),
+    top=Side(style="thin", color="BDD7EE"),
+    bottom=Side(style="thin", color="BDD7EE"),
 )
-ZEBRA = PatternFill("solid", fgColor="F4F7FB")
+ZEBRA = PatternFill("solid", fgColor="D6EAF8")
+MONEY_KEYS = {
+    "subtotal",
+    "descuento",
+    "iva_trasladado",
+    "ieps_trasladado",
+    "impuestos_trasladados",
+    "iva_retenido",
+    "isr_retenido",
+    "ieps_retenido",
+    "impuestos_retenidos",
+    "total",
+    "tipo_cambio",
+}
 
 
-def _write_sheet(ws, rows: list[CfdiRow]) -> None:
+def _write_sheet(ws: Worksheet, rows: list[CfdiRow]) -> None:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}1"
     for col, (_, title) in enumerate(COLUMNS, 1):
@@ -62,21 +101,9 @@ def _write_sheet(ws, rows: list[CfdiRow]) -> None:
         cell.fill = HEADER_FILL
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.row_dimensions[1].height = 28
-    money_keys = {
-        "subtotal",
-        "descuento",
-        "iva_trasladado",
-        "ieps_trasladado",
-        "impuestos_trasladados",
-        "iva_retenido",
-        "isr_retenido",
-        "ieps_retenido",
-        "impuestos_retenidos",
-        "total",
-        "tipo_cambio",
-    }
-    for r_i, row in enumerate(rows, 2):
+    ws.row_dimensions[1].height = 30
+    ordered = sorted(rows, key=lambda r: (r.fecha, r.uuid))
+    for r_i, row in enumerate(ordered, 2):
         data = row.as_excel()
         for c_i, (key, _) in enumerate(COLUMNS, 1):
             cell = ws.cell(r_i, c_i, data.get(key, ""))
@@ -84,18 +111,26 @@ def _write_sheet(ws, rows: list[CfdiRow]) -> None:
             cell.alignment = Alignment(vertical="center")
             if r_i % 2 == 0:
                 cell.fill = ZEBRA
-            if key in money_keys and cell.value != "":
+            if key in MONEY_KEYS and cell.value != "":
                 cell.number_format = MONEY
+    widths = {
+        "A": 20,
+        "B": 18,
+        "C": 16,
+        "D": 16,
+        "E": 32,
+        "F": 32,
+        "I": 38,
+        "S": 14,
+        "T": 16,
+        "AC": 40,
+    }
     for col in range(1, len(COLUMNS) + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 18
-    ws.column_dimensions["A"].width = 38
-    ws.column_dimensions["E"].width = 32
-    ws.column_dimensions["G"].width = 32
+        letter = get_column_letter(col)
+        ws.column_dimensions[letter].width = widths.get(letter, 16)
 
 
-def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = None) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _split(rows: list[CfdiRow], rfc_firma: str | None) -> dict[str, list[CfdiRow]]:
     ingresos: list[CfdiRow] = []
     egresos: list[CfdiRow] = []
     pagos: list[CfdiRow] = []
@@ -114,21 +149,31 @@ def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = 
             egresos.append(row)
         else:
             otros.append(row)
+    return {
+        "Reporte": rows,
+        "Ingresos": ingresos,
+        "Egresos": egresos,
+        "Pagos": pagos,
+        "Otros": otros,
+    }
 
+
+def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = None) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    groups = _split(rows, rfc_firma)
     wb = Workbook()
-    sheets = [
-        ("Todos", rows),
-        ("Ingresos", ingresos),
-        ("Egresos", egresos),
-        ("Pagos", pagos),
-        ("Otros", otros),
-    ]
     first = True
-    for name, data in sheets:
-        ws = wb.active if first else wb.create_sheet(name)
+    for name, data in groups.items():
         if first:
-            ws.title = name
+            ws = wb.active
+            if ws is None:
+                ws = wb.create_sheet(name)
+            else:
+                ws.title = name
             first = False
+        else:
+            ws = wb.create_sheet(name)
         _write_sheet(ws, data)
     wb.save(path)
     return path

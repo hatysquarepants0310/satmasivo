@@ -26,12 +26,20 @@ def test_parse_pago():
 
 
 def test_scan_and_excel(tmp_path):
+    from openpyxl import load_workbook
+
+    from satmasivo.excel import MASIVA_TITLES
+
     rows = scan_folder(FIXTURES)
     assert len(rows) == 2
     dest = tmp_path / "out.xlsx"
     export_excel(rows, dest, rfc_firma="EKU9003173C9")
-    assert dest.is_file()
-    assert dest.stat().st_size > 2000
+    wb = load_workbook(dest)
+    assert wb.sheetnames[0] == "Reporte"
+    headers = [c.value for c in wb["Reporte"][1]]
+    assert headers[: len(MASIVA_TITLES)] == MASIVA_TITLES
+    assert "Ingresos" in wb.sheetnames
+    assert "Egresos" in wb.sheetnames
 
 
 def test_pdf(tmp_path):
