@@ -85,6 +85,8 @@ def format_fecha_masiva(iso: str) -> str:
     try:
         hh, mm, ss = (time_part + ":00:00").split(":")[:3]
         h = int(hh)
+        if h == 0 and mm == "00" and ss == "00":
+            return day
         ampm = "a. m." if h < 12 else "p. m."
         h12 = h % 12 or 12
         return f"{day} {h12:02d}:{mm}:{ss} {ampm}"

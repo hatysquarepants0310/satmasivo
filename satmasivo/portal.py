@@ -504,6 +504,26 @@ def download_url(sess: requests.Session, url: str, dest_dir: Path, referer: str 
     return path
 
 
+def cfdi_fecha(path: Path) -> date | None:
+    raw = path.read_bytes()[:8192]
+    m = re.search(br'Fecha="([0-9]{4}-[0-9]{2}-[0-9]{2})', raw)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1).decode(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def keep_xml(path: Path, ini: date, fin: date) -> bool:
+    d = cfdi_fecha(path)
+    if d is None:
+        return True
+    if ini > fin:
+        ini, fin = fin, ini
+    return ini <= d <= fin
+
+
 def recover_by_uuid(sess: requests.Session, uuid: str, dest_dir: Path, sentido: str = "recibidas") -> Path | None:
     """Busca el folio en el portal y baja el AccionCfdi. No adivina RecuperaCfdi?uuid=."""
     url = CONSULTA.get(sentido, CONSULTA["recibidas"])
@@ -652,8 +672,13 @@ def descargar_con_sesion(
     last_html = ""
     written: list[Path] = []
     have: set[str] = set()
+    days = _days(fecha_ini, fecha_fin)
+    ini_d, fin_d = days[0], days[-1]
 
     def mark(got: Path) -> None:
+        if not keep_xml(got, ini_d, fin_d):
+            got.unlink(missing_ok=True)
+            return
         uid = got.stem.upper()
         if uid not in have:
             written.append(got)
@@ -666,51 +691,35 @@ def descargar_con_sesion(
             ok=True,
             msg=f"{len(have)} XML  {uid}",
         )
-    days = _days(fecha_ini, fecha_fin)
-    ndays = len(days)
-    for i, day in enumerate(days, 1):
-        note(
-            phase="consulta",
-            day=str(day),
-            day_i=i,
-            days=ndays,
-            done=i,
-            total=ndays,
-            found=len(uuids),
-            msg=f"Buscando {day}  ({i}/{ndays})",
-        )
+
+    def open_form() -> dict[str, str]:
         r0 = sess.get(url, timeout=40, allow_redirects=True, headers={"User-Agent": UA, "Referer": PORTAL})
         if not logged_in(r0.text, r0.url):
             raise SatError("Se cayó la sesión SAT. Entra otra vez en Home.")
         fields = parse_form(r0.text)
         if not fields:
             raise SatError("El portal no entregó el formulario de consulta. Reentra en Home.")
-        fields = _select_fechas(sess, url, fields)
-        extra = date_filters(sentido, day, day)
-        u, h, last_html, _fields, fmap = _search_once(sess, url, fields, extra)
+        return _select_fechas(sess, url, fields)
+
+    def pull(fields: dict[str, str], day: date, end: date | None = None) -> tuple[list[str], dict[str, str], dict[str, str]]:
+        nonlocal last_html
+        extra = date_filters(sentido, day, end or day)
+        u, h, last_html, fields, fmap = _search_once(sess, url, fields, extra)
         uuids.extend(u)
         hrefs.extend(h)
         folio_href.update(fmap)
-        day_links = list(dict.fromkeys([x for x in list(fmap.values()) + h if x]))
-        found = len(u) or len(fmap) or len(day_links)
-        if found:
-            note(
-                phase="consulta",
-                day=str(day),
-                day_i=i,
-                days=ndays,
-                done=i,
-                total=ndays,
-                found=found,
-                msg=f"{day}: {found} folios, {len(day_links)} ligas",
-            )
-        for j, link in enumerate(day_links, 1):
+        links = list(dict.fromkeys([x for x in list(fmap.values()) + h if x]))
+        return links, fields, fmap
+
+    def grab(links: list[str], label: str) -> None:
+        n = len(links)
+        for j, link in enumerate(links, 1):
             note(
                 phase="xml",
                 done=len(have),
-                total=max(found, 1),
+                total=max(n, 1),
                 ok=False,
-                msg=f"{day}  {j}/{len(day_links)} ligas · {len(have)} XML",
+                msg=f"{label}  {j}/{n} ligas · {len(have)} XML",
             )
             try:
                 got = download_url(sess, link, dest, referer=url)
@@ -718,6 +727,62 @@ def descargar_con_sesion(
                 got = None
             if got:
                 mark(got)
+
+    fields = open_form()
+    ndays = len(days)
+
+    if sentido == "emitidas" and ndays > 1:
+        note(phase="consulta", msg=f"Emitidas {ini_d} → {fin_d}", done=0, total=1)
+        links, fields, fmap = pull(fields, ini_d, fin_d)
+        found = len(links) or len(fmap)
+        if 0 < found < 500:
+            note(phase="consulta", found=found, msg=f"Rango: {found} folios")
+            grab(links, "rango")
+        else:
+            fields = open_form()
+            for i, day in enumerate(days, 1):
+                note(
+                    phase="consulta",
+                    day=str(day),
+                    day_i=i,
+                    days=ndays,
+                    done=i,
+                    total=ndays,
+                    msg=f"Buscando {day}  ({i}/{ndays})",
+                )
+                try:
+                    links, fields, fmap = pull(fields, day, day)
+                except SatError:
+                    fields = open_form()
+                    links, fields, fmap = pull(fields, day, day)
+                if links:
+                    grab(links, str(day))
+    else:
+        for i, day in enumerate(days, 1):
+            note(
+                phase="consulta",
+                day=str(day),
+                day_i=i,
+                days=ndays,
+                done=i,
+                total=ndays,
+                found=len(uuids),
+                msg=f"Buscando {day}  ({i}/{ndays})",
+            )
+            try:
+                links, fields, fmap = pull(fields, day, day)
+            except SatError:
+                fields = open_form()
+                links, fields, fmap = pull(fields, day, day)
+            found = len(links) or len(fmap)
+            if found:
+                note(
+                    phase="consulta",
+                    day=str(day),
+                    found=found,
+                    msg=f"{day}: {found} folios, {len(links)} ligas",
+                )
+            grab(links, str(day))
 
     if extra_html:
         u2, h2 = extract_download_targets(extra_html)

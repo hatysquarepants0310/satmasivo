@@ -486,8 +486,9 @@ class SatMasivoApp(tk.Tk):
         cer = tk.StringVar()
         key = tk.StringVar()
         pwd = tk.StringVar()
-        ini = tk.StringVar(value=datetime.now().replace(day=1).strftime("%Y-%m-%d"))
-        fin = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        cfg0 = load_config()
+        ini = tk.StringVar(value=str(cfg0.get("last_ini") or datetime.now().replace(day=1).strftime("%Y-%m-%d")))
+        fin = tk.StringVar(value=str(cfg0.get("last_fin") or datetime.now().strftime("%Y-%m-%d")))
         tipo = tk.StringVar(value="CFDI")
         estado = tk.StringVar(value="Todos")
         dest = tk.StringVar(value=str(self._download_dir))
@@ -549,6 +550,10 @@ class SatMasivoApp(tk.Tk):
                 messagebox.showerror("Error", "Falta carpeta destino.")
                 return
             self._download_dir = Path(args["dest"])
+            cfg = load_config()
+            cfg["last_ini"] = args["ini"]
+            cfg["last_fin"] = args["fin"]
+            save_config(cfg)
             if args["modo"] == "fiel":
                 if not args["cer"] or not args["key"] or not args["pwd"]:
                     messagebox.showerror("Error", "Para e.firma hacen falta .cer, .key y contraseña.")

@@ -32,6 +32,7 @@ def test_parse_pago():
 def test_fecha_masiva():
     assert format_fecha_masiva("2026-03-20T14:01:40") == "20/03/2026 02:01:40 p. m."
     assert format_fecha_masiva("2026-03-20T09:06:47") == "20/03/2026 09:06:47 a. m."
+    assert format_fecha_masiva("2026-07-07T00:00:00") == "07/07/2026"
 
 
 def test_scan_and_excel(tmp_path):

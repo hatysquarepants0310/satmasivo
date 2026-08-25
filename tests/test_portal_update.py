@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
-from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_folio_map, extract_result_pages, extract_table_rows, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
+from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_folio_map, extract_result_pages, extract_table_rows, html_from_delta, keep_xml, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -175,6 +175,18 @@ def test_extract_folio_map_one_per_row():
     uuids, hrefs = extract_download_targets(html)
     assert len(uuids) == 2
     assert len(hrefs) == 1
+
+
+def test_keep_xml_rango(tmp_path):
+    from datetime import date
+    from pathlib import Path
+
+    src = Path(__file__).parent / "fixtures" / "cfdi_ingreso.xml"
+    dest = tmp_path / src.name
+    dest.write_bytes(src.read_bytes())
+    assert keep_xml(dest, date(2020, 1, 1), date(2030, 1, 1))
+    assert not keep_xml(dest, date(2099, 1, 1), date(2099, 12, 31))
+
 
 
 
