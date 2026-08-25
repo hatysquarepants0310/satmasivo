@@ -1,4 +1,4 @@
-"""Ventana principal: barra tipo Masiva + portal SAT embebido."""
+"""Ventana principal: login SAT nativo + descarga."""
 
 from __future__ import annotations
 
@@ -8,30 +8,24 @@ import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-gi.require_version("WebKit2", "4.1")
-from gi.repository import Gdk, GLib, Gtk, Pango, WebKit2
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
 
 from satmasivo import __version__
 from satmasivo.cfdi import scan_folder
+from satmasivo.ciec_login import CiecClient
 from satmasivo.excel import export_excel
 from satmasivo.fiel import load_fiel
 from satmasivo.pdf import cfdi_to_pdf
-from satmasivo.portal import CONSULTA, PORTAL, descargar_con_sesion
+from satmasivo.portal import descargar_con_sesion
 from satmasivo.sat_ws import SatError, SatMasiva, extraer_zip
-from satmasivo.tlsenv import is_sat_host
 from satmasivo.update import check_latest, download_deb, install_deb, save_token
 from satmasivo.validar import validar_rows
 
-SAT_LOGIN = (
-    "https://cfdiau.sat.gob.mx/nidp/wsfed/ep"
-    "?id=SATUPCFDiCon&sid=0&option=credential&sid=0"
-)
 BLUE = "#0078D4"
 
 _CSS = f"""
@@ -51,16 +45,9 @@ window {{ background: #ffffff; }}
     border-color: #f0c14b;
 }}
 .toolbar label {{ color: #0b3d61; font-weight: 600; }}
-.hint {{
-    color: #ffffff;
-    font-weight: 700;
-    font-size: 13px;
-}}
-.statusbar {{
-    background: #f3f3f3;
-    padding: 2px 8px;
-    font-size: 11px;
-}}
+.hint {{ color: #ffffff; font-weight: 700; font-size: 13px; }}
+.statusbar {{ background: #f3f3f3; padding: 2px 8px; font-size: 11px; }}
+.login-title {{ font-size: 22px; font-weight: 700; color: #0b3d61; }}
 """.encode()
 
 
@@ -73,6 +60,22 @@ def apply_css() -> Gtk.CssProvider:
             screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
     return provider
+
+
+def pixbuf_from_bytes(data: bytes) -> GdkPixbuf.Pixbuf | None:
+    if not data:
+        return None
+    loader = GdkPixbuf.PixbufLoader()
+    try:
+        loader.write(data)
+        loader.close()
+        return loader.get_pixbuf()
+    except Exception:
+        try:
+            loader.close()
+        except Exception:
+            pass
+        return None
 
 
 class ToolButton(Gtk.Button):
@@ -93,12 +96,13 @@ class ToolButton(Gtk.Button):
 class SatMasivoWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title=f"SAT Masivo {__version__}")
-        self.set_default_size(1180, 760)
+        self.set_default_size(1100, 720)
         self.sentido = "recibidas"
         self._busy = False
-        self._tls_retried: set[str] = set()
         self._download_dir = Path.home() / "satmasivo"
         self._download_dir.mkdir(exist_ok=True)
+        self.ciec = CiecClient()
+        self._logged_rfc = ""
 
         provider = apply_css()
         self.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -136,45 +140,88 @@ class SatMasivoWindow(Gtk.Window):
             bar.pack_start(b, False, False, 0)
 
         hint = Gtk.Label(
-            label="Home = login SAT. Entra (captcha tú).\n"
-            "Luego Recibidas o Emitidas. SAT Masivo hace el resto."
+            label="Home = entra al SAT (RFC + CIEC + captcha).\n"
+            "Luego Recibidas o Emitidas y Descargar."
         )
         hint.set_justify(Gtk.Justification.LEFT)
         hint.get_style_context().add_class("hint")
         hint.set_xalign(0)
         bar.pack_end(hint, True, True, 8)
 
-        ctx = WebKit2.WebContext.get_default()
-        try:
-            ctx.set_tls_errors_policy(WebKit2.TLSErrorsPolicy.IGNORE)
-        except Exception:
-            pass
-        self.webview = WebKit2.WebView.new_with_context(ctx)
-        settings = self.webview.get_settings()
-        settings.set_enable_javascript(True)
-        settings.set_user_agent(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        if hasattr(settings, "set_hardware_acceleration_policy"):
-            settings.set_hardware_acceleration_policy(
-                WebKit2.HardwareAccelerationPolicy.NEVER
-            )
-        self.webview.connect("notify::uri", self._on_uri)
-        self.webview.connect("load-failed", self._on_load_failed)
-        self.webview.connect("load-failed-with-tls-errors", self._on_tls_failed)
-        ctx.connect("download-started", self._on_download)
-        scroll = Gtk.ScrolledWindow()
-        scroll.add(self.webview)
-        root.pack_start(scroll, True, True, 0)
+        self.pages = Gtk.Stack()
+        self.pages.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        root.pack_start(self.pages, True, True, 0)
+        self.pages.add_named(self._build_login(), "home")
+        self.pages.add_named(self._build_work(), "work")
 
-        self.status = Gtk.Label(label=SAT_LOGIN, xalign=0)
+        self.status = Gtk.Label(label="Home — login SAT", xalign=0)
         self.status.get_style_context().add_class("statusbar")
         self.status.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         root.pack_end(self.status, False, False, 0)
 
         self.go_home()
+        GLib.idle_add(self._reload_captcha)
         GLib.timeout_add_seconds(8, self._silent_update_check)
+
+    def _build_login(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(36)
+        box.set_margin_bottom(24)
+        box.set_halign(Gtk.Align.CENTER)
+        title = Gtk.Label(label="Acceso por contraseña")
+        title.get_style_context().add_class("login-title")
+        box.pack_start(title, False, False, 0)
+        sub = Gtk.Label(
+            label="Misma CIEC del SAT. El captcha lo resuelves tú.\nNo guardamos la contraseña."
+        )
+        sub.set_justify(Gtk.Justification.CENTER)
+        box.pack_start(sub, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        grid.set_halign(Gtk.Align.CENTER)
+        box.pack_start(grid, False, False, 8)
+
+        self.ent_rfc = Gtk.Entry()
+        self.ent_rfc.set_placeholder_text("RFC")
+        self.ent_rfc.set_width_chars(28)
+        self.ent_pwd = Gtk.Entry(visibility=False)
+        self.ent_pwd.set_placeholder_text("Contraseña CIEC")
+        self.ent_cap = Gtk.Entry()
+        self.ent_cap.set_placeholder_text("Escribe el captcha")
+        self.img_cap = Gtk.Image()
+        self.lbl_login = Gtk.Label(label="")
+        self.lbl_login.set_line_wrap(True)
+
+        grid.attach(Gtk.Label(label="RFC", xalign=1), 0, 0, 1, 1)
+        grid.attach(self.ent_rfc, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Contraseña", xalign=1), 0, 1, 1, 1)
+        grid.attach(self.ent_pwd, 1, 1, 1, 1)
+        grid.attach(Gtk.Label(label="Captcha", xalign=1), 0, 2, 1, 1)
+        cap_box = Gtk.Box(spacing=8)
+        cap_box.pack_start(self.img_cap, False, False, 0)
+        btn_ref = Gtk.Button(label="Otro captcha")
+        btn_ref.connect("clicked", lambda *_: self._reload_captcha())
+        cap_box.pack_start(btn_ref, False, False, 0)
+        grid.attach(cap_box, 1, 2, 1, 1)
+        grid.attach(self.ent_cap, 1, 3, 1, 1)
+
+        btn = Gtk.Button(label="Enviar")
+        btn.get_style_context().add_class("suggested-action")
+        btn.connect("clicked", self.on_login)
+        grid.attach(btn, 1, 4, 1, 1)
+        grid.attach(self.lbl_login, 1, 5, 1, 1)
+        self.ent_cap.connect("activate", self.on_login)
+        return box
+
+    def _build_work(self) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(48)
+        box.set_halign(Gtk.Align.CENTER)
+        self.lbl_work = Gtk.Label(label="")
+        self.lbl_work.set_justify(Gtk.Justification.CENTER)
+        self.lbl_work.set_line_wrap(True)
+        box.pack_start(self.lbl_work, False, False, 0)
+        return box
 
     def _mark(self, which: str) -> None:
         for name in ("btn_home", "btn_rec", "btn_emi"):
@@ -183,81 +230,88 @@ class SatMasivoWindow(Gtk.Window):
 
     def go_home(self) -> None:
         self._mark("btn_home")
-        self.webview.load_uri(SAT_LOGIN)
-        self._set_status("Login SAT")
+        self.pages.set_visible_child_name("home")
+        self._set_status("Home — login SAT")
 
     def set_sentido(self, sentido: str, navigate: bool = True) -> None:
         self.sentido = sentido
         self._mark("btn_rec" if sentido == "recibidas" else "btn_emi")
-        if navigate:
-            self.webview.load_uri(CONSULTA[sentido])
-        self._set_status(f"Modo {sentido}. {self.webview.get_uri() or SAT_LOGIN}")
-
-    def _on_uri(self, *_args) -> None:
-        self._set_status(self.webview.get_uri() or "")
-
-    def _on_tls_failed(self, view, uri, certificate, errors) -> bool:
-        host = urlparse(uri or "").hostname or ""
-        if not is_sat_host(host):
-            self._show_sat_error(uri, "Certificado TLS inaceptable (no es SAT).")
-            return True
-        ctx = view.get_context()
-        try:
-            ctx.allow_tls_certificate_for_host(certificate, host)
-        except Exception:
-            pass
-        if host in self._tls_retried:
-            self._show_sat_error(uri, "El SAT rechazó el TLS aun después de aceptar su certificado.")
-            return True
-        self._tls_retried.add(host)
-        GLib.idle_add(view.load_uri, uri)
-        return True
-
-    def _on_load_failed(self, _view, _event, uri, error) -> bool:
-        msg = ""
-        if error is not None:
-            msg = getattr(error, "message", None) or str(error)
-        if uri in self._tls_retried and "tls" in msg.lower():
-            return True
-        self._show_sat_error(uri, msg or "No se pudo cargar la página.")
-        return True
-
-    def _show_sat_error(self, uri: str, detalle: str) -> None:
-        safe = (detalle or "").replace("<", "&lt;")
-        dest = uri or SAT_LOGIN
-        html = f"""<!doctype html><meta charset="utf-8">
-<style>
- body{{font-family:sans-serif;margin:48px;color:#0b3d61}}
- a{{display:inline-block;margin-top:16px;padding:10px 16px;background:#0078D4;color:#fff;text-decoration:none;border-radius:6px}}
-</style>
-<h2>No se pudo abrir el SAT</h2>
-<p>{safe}</p>
-<p>Pulsa Home o reintenta. El SAT usa un TLS viejo; esta versión ya lo acepta.</p>
-<p><a href="{dest}">Reintentar</a></p>"""
-        self.webview.load_html(html, dest)
-        self._set_status(f"Error SAT: {detalle}")
+        if not self._logged_rfc:
+            self.go_home()
+            self.lbl_login.set_text("Entra en Home primero (RFC + contraseña + captcha).")
+            return
+        self.pages.set_visible_child_name("work")
+        self.lbl_work.set_text(
+            f"Sesión {self._logged_rfc}\nModo {sentido}.\nPulsa Descargar."
+        )
+        self._set_status(f"Modo {sentido} · {self._logged_rfc}")
 
     def _set_status(self, text: str) -> None:
         self.status.set_text(text)
 
-    def _on_download(self, _ctx, download) -> None:
-        dest_dir = self._download_dir
+    def _reload_captcha(self) -> bool:
+        self.lbl_login.set_text("Cargando captcha del SAT…")
 
-        def decide(_dl, suggested):
-            name = suggested or "sat-descarga.bin"
-            path = dest_dir / name
-            download.set_destination(GLib.filename_to_uri(str(path), None))
+        def work():
+            try:
+                img = self.ciec.start()
+                GLib.idle_add(self._show_captcha, img, "")
+            except Exception as exc:
+                GLib.idle_add(self._show_captcha, b"", str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+        return False
+
+    def _show_captcha(self, data: bytes, err: str) -> bool:
+        if err:
+            self.lbl_login.set_text(err)
             return False
+        pb = pixbuf_from_bytes(data)
+        if pb:
+            self.img_cap.set_from_pixbuf(pb)
+            self.lbl_login.set_text("")
+        else:
+            self.lbl_login.set_text("No se pudo pintar el captcha.")
+        return False
 
-        download.connect("decide-destination", decide)
+    def on_login(self, *_a) -> None:
+        rfc = self.ent_rfc.get_text().strip()
+        pwd = self.ent_pwd.get_text()
+        cap = self.ent_cap.get_text().strip()
+        if not rfc or not pwd or not cap:
+            self.lbl_login.set_text("Llena RFC, contraseña y captcha.")
+            return
+        self.lbl_login.set_text("Entrando al SAT…")
+
+        def work():
+            try:
+                got = self.ciec.login(rfc, pwd, cap)
+                GLib.idle_add(self._login_ok, got)
+            except Exception as exc:
+                GLib.idle_add(self._login_fail, str(exc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _login_ok(self, rfc: str) -> bool:
+        self._logged_rfc = rfc
+        self.ent_pwd.set_text("")
+        self.ent_cap.set_text("")
+        self.lbl_login.set_text(f"Sesión {rfc}")
+        self.set_sentido(self.sentido)
+        self._info("Sesión SAT", f"Entraste como {rfc}. Ya puedes Descargar.")
+        return False
+
+    def _login_fail(self, msg: str) -> bool:
+        self.lbl_login.set_text(msg)
+        pb = pixbuf_from_bytes(self.ciec.captcha)
+        if pb:
+            self.img_cap.set_from_pixbuf(pb)
+        return False
 
     def _info(self, title: str, message: str) -> None:
         dlg = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.OK,
-            text=title,
+            transient_for=self, flags=0, message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK, text=title,
         )
         dlg.format_secondary_text(message)
         dlg.run()
@@ -265,20 +319,15 @@ class SatMasivoWindow(Gtk.Window):
 
     def _error(self, message: str) -> None:
         dlg = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.ERROR,
-            buttons=Gtk.ButtonsType.OK,
-            text="Error",
+            transient_for=self, flags=0, message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK, text="Error",
         )
         dlg.format_secondary_text(message)
         dlg.run()
         dlg.destroy()
 
     def _pick_folder(self, title: str) -> str | None:
-        dlg = Gtk.FileChooserDialog(
-            title=title, parent=self, action=Gtk.FileChooserAction.SELECT_FOLDER
-        )
+        dlg = Gtk.FileChooserDialog(title=title, parent=self, action=Gtk.FileChooserAction.SELECT_FOLDER)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
         res = dlg.run()
         path = dlg.get_filename() if res == Gtk.ResponseType.OK else None
@@ -310,11 +359,8 @@ class SatMasivoWindow(Gtk.Window):
 
     def _ask_yes_no(self, text: str) -> bool:
         dlg = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.YES_NO,
-            text=text,
+            transient_for=self, flags=0, message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO, text=text,
         )
         res = dlg.run()
         dlg.destroy()
@@ -357,19 +403,16 @@ class SatMasivoWindow(Gtk.Window):
     def on_descargar(self, *_a) -> None:
         dlg = Gtk.Dialog(title="Descargar del SAT", transient_for=self, flags=0)
         dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Descargar", Gtk.ResponseType.OK)
-        dlg.set_default_size(560, 420)
+        dlg.set_default_size(560, 400)
         box = dlg.get_content_area()
         box.set_spacing(8)
         box.set_margin_top(12)
-        box.set_margin_bottom(8)
         box.set_margin_start(12)
         box.set_margin_end(12)
-
-        radio_ciec = Gtk.RadioButton.new_with_label(None, "Sesión SAT (RFC + contraseña de la ventana)")
+        radio_ciec = Gtk.RadioButton.new_with_label(None, "Sesión SAT (la de Home)")
         radio_fiel = Gtk.RadioButton.new_with_label_from_widget(radio_ciec, "e.firma (.cer + .key) — Web Service")
         box.pack_start(radio_ciec, False, False, 0)
         box.pack_start(radio_fiel, False, False, 0)
-
         grid = Gtk.Grid(column_spacing=10, row_spacing=8)
         box.pack_start(grid, True, True, 0)
 
@@ -395,23 +438,15 @@ class SatMasivoWindow(Gtk.Window):
         dest = Gtk.FileChooserButton(title="Carpeta destino", action=Gtk.FileChooserAction.SELECT_FOLDER)
         dest.set_filename(str(self._download_dir))
         validar = Gtk.CheckButton(label="Validar vigencia en el SAT al terminar", active=True)
-
         labeled(0, "Certificado .cer", cer)
         labeled(1, "Llave .key", key)
         labeled(2, "Contraseña FIEL", pwd)
         labeled(3, "Fecha inicial", ini)
         labeled(4, "Fecha final", fin)
-        labeled(5, "Tipo (solo e.firma)", tipo)
-        labeled(6, "Estado (solo e.firma)", estado)
+        labeled(5, "Tipo (e.firma)", tipo)
+        labeled(6, "Estado (e.firma)", estado)
         labeled(7, "Destino", dest)
         grid.attach(validar, 1, 8, 1, 1)
-        note = Gtk.Label(
-            label="CIEC: entra en la ventana (captcha tú). No guardamos la contraseña.\n"
-            "e.firma: viaja solo al SAT. Tampoco se guarda.",
-            xalign=0,
-        )
-        note.set_line_wrap(True)
-        box.pack_start(note, False, False, 0)
 
         def toggle(*_):
             use_fiel = radio_fiel.get_active()
@@ -419,9 +454,7 @@ class SatMasivoWindow(Gtk.Window):
                 w.set_sensitive(use_fiel)
 
         radio_ciec.connect("toggled", toggle)
-        radio_fiel.connect("toggled", toggle)
         toggle()
-
         dlg.show_all()
         if dlg.run() != Gtk.ResponseType.OK:
             dlg.destroy()
@@ -450,34 +483,11 @@ class SatMasivoWindow(Gtk.Window):
                 return
             self._run_bg("Descargando por e.firma…", lambda: self._job_descarga_fiel(args))
             return
-        self._cookies_then(
-            lambda cookies: self._run_bg(
-                "Descargando con sesión SAT…",
-                lambda: self._job_descarga_ciec(args, cookies),
-            )
-        )
-
-    def _cookies_then(self, fn) -> None:
-        cm = self.webview.get_context().get_cookie_manager()
-
-        def done(mgr, res):
-            cookies = []
-            try:
-                raw = mgr.get_cookies_finish(res)
-            except Exception:
-                raw = []
-            for c in raw or []:
-                cookies.append(
-                    (
-                        c.get_name(),
-                        c.get_value(),
-                        c.get_domain() or "",
-                        c.get_path() or "/",
-                    )
-                )
-            fn(cookies)
-
-        cm.get_cookies(PORTAL, None, done)
+        if not self._logged_rfc:
+            self._error("Entra en Home primero.")
+            return
+        cookies = self.ciec.cookie_tuples()
+        self._run_bg("Descargando con sesión SAT…", lambda: self._job_descarga_ciec(args, cookies))
 
     def on_actualizar(self, *_a) -> None:
         self._run_bg("Buscando actualización…", self._job_check_update)
@@ -489,10 +499,7 @@ class SatMasivoWindow(Gtk.Window):
             except Exception:
                 return
             if rel:
-                GLib.idle_add(
-                    self._set_status,
-                    f"Hay {rel.tag} disponible. Pulsa Actualizar.",
-                )
+                GLib.idle_add(self._set_status, f"Hay {rel.tag} disponible. Pulsa Actualizar.")
 
         threading.Thread(target=work, daemon=True).start()
         return False
@@ -505,14 +512,8 @@ class SatMasivoWindow(Gtk.Window):
         box.set_margin_start(10)
         box.set_margin_end(10)
         box.pack_start(
-            Gtk.Label(
-                label="Repo privado. Pega un token con lectura de releases\n"
-                "(o deja gh auth login en esta máquina).",
-                xalign=0,
-            ),
-            False,
-            False,
-            0,
+            Gtk.Label(label="Repo privado. Token con lectura de releases, o gh auth login.", xalign=0),
+            False, False, 0,
         )
         entry = Gtk.Entry(visibility=False)
         box.pack_start(entry, False, False, 8)
@@ -568,6 +569,8 @@ class SatMasivoWindow(Gtk.Window):
         return f"{len(rows)} comprobantes → {dest}"
 
     def _job_descarga_fiel(self, args: dict) -> str:
+        import time
+
         fiel = load_fiel(args["cer"], args["key"], args["pwd"])
         client = SatMasiva(fiel)
         ini = datetime.strptime(args["ini"], "%Y-%m-%d")
@@ -583,25 +586,17 @@ class SatMasivoWindow(Gtk.Window):
             raise SatError(f"{sol.codigo} {sol.mensaje}".strip() or "Solicitud rechazada")
         dest = Path(args["dest"]) / fiel.rfc / args["sentido"] / args["ini"]
         dest.mkdir(parents=True, exist_ok=True)
-        import time
-
         last = None
         for _ in range(90):
             last = client.verificar(sol.id_solicitud)
-            GLib.idle_add(
-                self._set_status,
-                f"{last.estado_nombre} · {last.numero_cfdis} CFDI · {sol.id_solicitud}",
-            )
+            GLib.idle_add(self._set_status, f"{last.estado_nombre} · {last.numero_cfdis} CFDI")
             if last.estado == 3:
                 break
             if last.estado in {4, 5, 6}:
                 raise SatError(f"{last.estado_nombre}: {last.mensaje}")
             time.sleep(20)
         else:
-            raise SatError(
-                f"Sigue {last.estado_nombre if last else 'en proceso'}. "
-                f"IdSolicitud {sol.id_solicitud}. El SAT puede tardar horas."
-            )
+            raise SatError(f"Sigue en proceso. Id {sol.id_solicitud}.")
         extracted: list[str] = []
         for paq in last.paquetes:
             blob = client.descargar_paquete(paq)
@@ -612,7 +607,7 @@ class SatMasivoWindow(Gtk.Window):
     def _job_descarga_ciec(self, args: dict, cookies: list) -> str:
         dest = Path(args["dest"]) / "sesion-sat" / args["sentido"] / args["ini"]
         files = descargar_con_sesion(cookies, sentido=args["sentido"], dest=dest)
-        return self._finish_rows(dest, args["validar"], None, extra=f"{len(files)} XML por sesión SAT\n")
+        return self._finish_rows(dest, args["validar"], self._logged_rfc, extra=f"{len(files)} XML por sesión SAT\n")
 
     def _finish_rows(self, dest: Path, validar: bool, rfc: str | None, extra: str = "") -> str:
         rows = scan_folder(dest)
@@ -634,21 +629,15 @@ class SatMasivoWindow(Gtk.Window):
         return "__RESTART__"
 
     def _restart(self) -> None:
-        exe = shutil_which_satmasivo()
-        os.execv(exe[0], exe)
+        import shutil
 
-
-def shutil_which_satmasivo() -> list[str]:
-    import shutil
-
-    found = shutil.which("satmasivo")
-    if found:
-        return [found]
-    return [sys.executable, "-m", "satmasivo"]
+        found = shutil.which("satmasivo")
+        if found:
+            os.execv(found, [found])
+        os.execv(sys.executable, [sys.executable, "-m", "satmasivo"])
 
 
 def main() -> None:
-    os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     try:
         win = SatMasivoWindow()
         win.connect("destroy", Gtk.main_quit)
@@ -658,10 +647,8 @@ def main() -> None:
         sys.stderr.write(f"satmasivo: {exc}\n{traceback.format_exc()}")
         try:
             dlg = Gtk.MessageDialog(
-                flags=0,
-                message_type=Gtk.MessageType.ERROR,
-                buttons=Gtk.ButtonsType.OK,
-                text="SAT Masivo no pudo abrir",
+                flags=0, message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK, text="SAT Masivo no pudo abrir",
             )
             dlg.format_secondary_text(str(exc))
             dlg.run()

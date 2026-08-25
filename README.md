@@ -1,21 +1,12 @@
 # SAT Masivo
 
-Cliente Ubuntu de descarga masiva de CFDI.
+Login nativo al SAT (no WebKit). El portal exige un POST; un GET deja la página en blanco.
 
-## Uso
-
-1. **Home** — login oficial del SAT (RFC + contraseña + captcha, o e.firma).
-2. **Recibidas / Emitidas** — ya con sesión.
-3. **Descargar** — sesión SAT de la ventana, o e.firma (WS).
-4. **Actualizar** — baja el `.deb` del release.
-
-## Instalar
+1. Home: RFC + CIEC + captcha (el SAT lo pinta).
+2. Recibidas / Emitidas.
+3. Descargar (sesión o e.firma).
 
 ```bash
-sudo apt install ./satmasivo_1.2.0_all.deb
+sudo apt install ./satmasivo_1.3.0_all.deb
 satmasivo
 ```
-
-Si no abre, córrelo en terminal.
-
-El SAT usa DH de 1024 bits. El launcher fuerza TLS compatible (GnuTLS + OpenSSL SECLEVEL=1).

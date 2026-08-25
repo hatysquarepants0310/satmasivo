@@ -40,7 +40,7 @@ class _LinkParser(HTMLParser):
 
 
 def session_from_cookies(cookies: list[tuple[str, str, str, str]]) -> requests.Session:
-    s = sat_session()
+    s = sat_session(insecure=True)
     s.headers.update({"User-Agent": UA, "Referer": PORTAL})
     for name, value, domain, path in cookies:
         s.cookies.set(name, value, domain=domain or ".sat.gob.mx", path=path or "/")

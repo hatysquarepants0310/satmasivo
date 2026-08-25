@@ -1,3 +1,4 @@
+from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login
 from satmasivo.portal import extract_download_targets, looks_like_xml, logged_in
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
@@ -49,10 +50,23 @@ def test_tls_apply_sets_gnutls(monkeypatch):
 def test_sat_login_tls():
     from satmasivo.http import sat_session
 
-    r = sat_session().get(
+    r = sat_session(insecure=True).get(
         "https://cfdiau.sat.gob.mx/nidp/wsfed/ep?id=SATUPCFDiCon&sid=0&option=credential&sid=0",
         timeout=25,
         allow_redirects=True,
     )
     assert r.status_code == 200
+
+
+def test_extract_captcha_and_live_start():
+    html = (
+        '<img src="data:image/png;base64,aGVsbG8=">'
+        '<input name="Ecom_User_ID"><input name="userCaptcha">'
+    )
+    assert looks_like_login(html)
+    assert extract_captcha(html) == b"hello"
+    img = CiecClient().start()
+    assert len(img) > 80
+
+
 

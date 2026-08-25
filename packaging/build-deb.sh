@@ -19,7 +19,7 @@ Version: $VER
 Section: office
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.11), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil
+Depends: python3 (>= 3.11), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, python3-lxml, python3-cryptography, python3-requests, python3-openpyxl, python3-reportlab, python3-pil
 Maintainer: Daniel <hatysquarepants0310@users.noreply.github.com>
 Description: Descarga masiva de CFDI del SAT para Ubuntu
  Cliente de escritorio para bajar, validar y reportar CFDI
