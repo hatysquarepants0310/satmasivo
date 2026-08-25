@@ -1,4 +1,4 @@
-from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form
+from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
 from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
@@ -103,6 +103,14 @@ def test_parse_wsfed_form():
     assert parsed2 is not None
     assert parsed2[2]["wresult"] == "tok"
     assert parse_auto_form('<form><input name="wa" value="wsignin1.0"></form>') is None
+    login_html = """
+    <form action="/nidp/app/login?id=SATUPCFDiCon" method="post">
+    <input name="Ecom_User_ID"><input name="Ecom_Password"><input name="userCaptcha">
+    </form>
+    """
+    la = parse_login_form(login_html)
+    assert la is not None
+    assert "SATUPCFDiCon" in la[0]
 
 
 def test_html_from_delta():

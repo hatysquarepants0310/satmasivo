@@ -271,6 +271,8 @@ class SatMasivoApp(tk.Tk):
         self.after(0, lambda: fn(*args))
 
     def _reload_captcha(self) -> None:
+        if self._login_busy:
+            return
         self.lbl_login.configure(text="Cargando captcha del SAT…")
 
         def work():
@@ -282,7 +284,7 @@ class SatMasivoApp(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_captcha(self, data: bytes, err: str) -> None:
+    def _show_captcha(self, data: bytes, err: str, keep: str = "") -> None:
         if err:
             self.lbl_login.configure(text=err)
             return
@@ -290,9 +292,9 @@ class SatMasivoApp(tk.Tk):
             photo = _photo_from_bytes(data)
             self._captcha_photo = photo
             self.img_cap.configure(image=photo, width=photo.width(), height=photo.height())
-            self.lbl_login.configure(text="")
+            self.lbl_login.configure(text=keep)
         except Exception as exc:
-            self.lbl_login.configure(text=f"No se pudo pintar el captcha: {exc}")
+            self.lbl_login.configure(text=keep or f"No se pudo pintar el captcha: {exc}")
 
     def on_login(self) -> None:
         rfc = self.ent_rfc.get().strip()
@@ -338,9 +340,12 @@ class SatMasivoApp(tk.Tk):
 
     def _login_fail(self, msg: str) -> None:
         self._login_busy = False
-        self.lbl_login.configure(text=msg)
+        self.ent_cap.delete(0, tk.END)
         if self.ciec.captcha:
-            self._show_captcha(self.ciec.captcha, "")
+            self._show_captcha(self.ciec.captcha, "", keep=msg)
+        else:
+            self.lbl_login.configure(text=msg)
+        messagebox.showerror("Login SAT", msg)
 
     def _remember_lote(self, dest: Path) -> None:
         self._last_lote = dest

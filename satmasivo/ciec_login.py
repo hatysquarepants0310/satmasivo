@@ -1,4 +1,4 @@
-"""Login CIEC al SAT: /nidp/app/login → POST credencial → WS-Fed → portalcfdi."""
+"""Login CIEC al SAT: portal → form de captcha → POST en esa misma URL → WS-Fed."""
 
 from __future__ import annotations
 
@@ -21,8 +21,7 @@ AUTH_CIEC = (
     "https://cfdiau.sat.gob.mx/nidp/wsfed/ep"
     "?id=SATUPCFDiCon&sid=0&option=credential&sid=0"
 )
-# (connect, read). El handshake del SAT a veces no corta con un solo int.
-TIMEOUT = (8, 30)
+TIMEOUT = (15, 40)
 CAPTCHA_RE = re.compile(
     r"data:image/(?:jpeg|jpg|png|gif);base64,([A-Za-z0-9+/=\s]+)",
     re.I,
@@ -79,7 +78,6 @@ class _FormParser(HTMLParser):
 
 
 def parse_auto_form(html: str) -> tuple[str, str, dict[str, str]] | None:
-    """Solo el form federado (wresult/SAML). Un `wa` suelto no cuenta."""
     p = _FormParser()
     p.feed(html or "")
     p.finish()
@@ -87,6 +85,16 @@ def parse_auto_form(html: str) -> tuple[str, str, dict[str, str]] | None:
         names = {n.lower() for n in fields}
         if "wresult" in names or "samlresponse" in names:
             return action, method, fields
+    return None
+
+
+def parse_login_form(html: str) -> tuple[str, dict[str, str]] | None:
+    p = _FormParser()
+    p.feed(html or "")
+    p.finish()
+    for action, _method, fields in p.forms:
+        if "Ecom_User_ID" in fields and "userCaptcha" in fields:
+            return action, fields
     return None
 
 
@@ -103,9 +111,10 @@ def logged_in_portal(html: str, final_url: str, rfc: str = "") -> bool:
         return True
     if "RFC Autenticado:" in text:
         return True
-    if "logout.aspx" in text.lower():
+    low = text.lower()
+    if "logout.aspx" in low or "consultareceptor" in low or "consultaemisor" in low:
         return True
-    return "ConsultaReceptor" in text or "ConsultaEmisor" in text or "cfdi" in text.lower()
+    return "salir" in low and "rfc" in low
 
 
 @dataclass
@@ -116,16 +125,26 @@ class CiecClient:
     def __post_init__(self) -> None:
         self.sess = sat_session(insecure=True)
         self._lock = threading.Lock()
+        self._auth_url = AUTH_CIEC
+
+    def _new_sess(self) -> None:
+        self.sess = sat_session(insecure=True)
 
     def start(self) -> bytes:
         with self._lock:
+            self._new_sess()
             last = None
-            for url in (AUTH_LOGIN, AUTH_CIEC, PORTAL):
+            for url in (PORTAL, AUTH_CIEC, AUTH_LOGIN):
                 try:
                     r = self.sess.get(url, timeout=TIMEOUT, allow_redirects=True)
                     last = r
                     if looks_like_login(r.text):
                         self.captcha = extract_captcha(r.text)
+                        parsed = parse_login_form(r.text)
+                        if parsed and parsed[0]:
+                            self._auth_url = urljoin(r.url, parsed[0])
+                        else:
+                            self._auth_url = r.url
                         return self.captcha
                 except Exception as exc:
                     last = exc
@@ -150,28 +169,33 @@ class CiecClient:
             r = self.sess.post(url, data=fields, timeout=TIMEOUT, allow_redirects=True)
         return r.text, r.url
 
+    def _reject_login(self, html: str, msg: str) -> None:
+        try:
+            self.captcha = extract_captcha(html)
+        except SatError:
+            self.captcha = b""
+        raise SatError(msg)
+
     def login(self, rfc: str, password: str, captcha: str) -> str:
         rfc = rfc.strip().upper()
         with self._lock:
+            payload = {
+                "option": "credential",
+                "submit": "Enviar",
+                "Ecom_User_ID": rfc,
+                "Ecom_Password": password,
+                "userCaptcha": captcha.strip(),
+            }
             r = self.sess.post(
-                AUTH_LOGIN,
-                data={
-                    "option": "credential",
-                    "submit": "Enviar",
-                    "Ecom_User_ID": rfc,
-                    "Ecom_Password": password,
-                    "userCaptcha": captcha.strip(),
-                },
+                self._auth_url or AUTH_CIEC,
+                data=payload,
                 timeout=TIMEOUT,
                 allow_redirects=True,
             )
             html, url = r.text, r.url
             if looks_like_login(html):
-                try:
-                    self.captcha = extract_captcha(html)
-                except SatError:
-                    self.captcha = b""
-                raise SatError("RFC, contraseña o captcha incorrectos.")
+                self._reject_login(html, "RFC, contraseña o captcha incorrectos.")
+            html, url = self._post_wsfed_once(html, url)
             html, url = self._post_wsfed_once(html, url)
             if not logged_in_portal(html, url, rfc):
                 try:
@@ -182,11 +206,7 @@ class CiecClient:
                     raise SatError(f"El SAT no cerró el login: {exc}") from exc
             if not logged_in_portal(html, url, rfc):
                 if looks_like_login(html):
-                    try:
-                        self.captcha = extract_captcha(html)
-                    except SatError:
-                        self.captcha = b""
-                    raise SatError("RFC, contraseña o captcha incorrectos.")
+                    self._reject_login(html, "RFC, contraseña o captcha incorrectos.")
                 raise SatError(
                     "El SAT aceptó el login pero no abrió el portal. Reintenta Home."
                 )
