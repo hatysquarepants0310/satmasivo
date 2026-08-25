@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form
-from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta
+from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -31,6 +31,9 @@ def test_parse_sat_delta_and_dates():
     assert emi["ctl00$MainContent$CldFechaInicial2$Calendario_text"] == "01/03/2026"
     assert emi["ctl00$MainContent$CldFechaFinal2$Calendario_text"] == "31/03/2026"
     assert extract_accion_urls("return AccionCfdi('foo.aspx?x=1','Recuperacion');")[0].endswith("foo.aspx?x=1")
+    qf = query_filters()
+    assert qf["ctl00$MainContent$BtnBusqueda"] == "Buscar CFDI"
+    assert qf["ctl00$MainContent$ddlComplementos"] == "-1"
 
 
 def test_logged_in_detects_login_page():

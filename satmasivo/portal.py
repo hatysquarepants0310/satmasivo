@@ -99,12 +99,53 @@ def html_from_delta(source: str) -> str:
 def parse_sat_delta(source: str) -> dict[str, str]:
     """Respuesta AJAX del SAT: |len|type|name|value|…"""
     parts = (source or "").split("|")
-    wanted = {"__EVENTTARGET", "__EVENTARGUMENT", "__LASTFOCUS", "__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"}
+    wanted = {
+        "__EVENTTARGET",
+        "__EVENTARGUMENT",
+        "__LASTFOCUS",
+        "__VIEWSTATE",
+        "__VIEWSTATEGENERATOR",
+        "__EVENTVALIDATION",
+    }
     out: dict[str, str] = {}
-    for i, part in enumerate(parts):
-        if part in wanted and i + 1 < len(parts):
-            out[part] = parts[i + 1]
+    i = 0
+    while i < len(parts):
+        name = parts[i]
+        if name in wanted and i + 1 < len(parts):
+            out[name] = parts[i + 1]
+        i += 1
     return out
+
+
+def _response_text(r: requests.Response) -> str:
+    raw = r.content or b""
+    head = raw[:500].lower()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or b"charset=utf-16" in head:
+        return raw.decode("utf-16", errors="replace")
+    text = r.text or ""
+    if "charset=utf-16" in text[:500].lower() and "\x00" in raw[:80].decode("latin-1", errors="ignore"):
+        return raw.decode("utf-16", errors="replace")
+    return text.replace("charset=utf-16", "charset=utf-8")
+
+
+AJAX_RDO_FECHAS = {
+    "__ASYNCPOST": "true",
+    "__EVENTARGUMENT": "",
+    "__EVENTTARGET": "ctl00$MainContent$RdoFechas",
+    "__LASTFOCUS": "",
+    "ctl00$MainContent$FiltroCentral": "RdoFechas",
+    "ctl00$ScriptManager1": "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$RdoFechas",
+}
+
+
+def query_filters() -> dict[str, str]:
+    return {
+        "ctl00$MainContent$BtnBusqueda": "Buscar CFDI",
+        "ctl00$MainContent$DdlEstadoComprobante": "-1",
+        "ctl00$MainContent$ddlComplementos": "-1",
+        "ctl00$MainContent$TxtRfcReceptor": "",
+        "ctl00$MainContent$TxtRfcTercero": "",
+    }
 
 
 def extract_accion_urls(html: str, base: str = PORTAL) -> list[str]:
@@ -177,39 +218,56 @@ def date_filters(sentido: str, day: date, end: date | None = None) -> dict[str, 
 def _ajax(sess: requests.Session, url: str, data: dict[str, str]) -> str:
     headers = {
         **AJAX_HEADERS,
+        "User-Agent": UA,
         "Referer": url,
         "Origin": "https://portalcfdi.facturaelectronica.sat.gob.mx",
+        "Accept": "*/*",
     }
     r = sess.post(url, data=data, headers=headers, timeout=90, allow_redirects=True)
-    return r.text or ""
+    return _response_text(r)
 
 
 def _select_fechas(sess: requests.Session, url: str, fields: dict[str, str]) -> dict[str, str]:
     post = dict(fields)
-    post.update(
-        {
-            "__ASYNCPOST": "true",
-            "__EVENTARGUMENT": "",
-            "__EVENTTARGET": "ctl00$MainContent$RdoFechas",
-            "__LASTFOCUS": "",
-            "ctl00$MainContent$FiltroCentral": "RdoFechas",
-            "ctl00$ScriptManager1": "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$RdoFechas",
-        }
-    )
+    post.update(AJAX_RDO_FECHAS)
     html = _ajax(sess, url, post)
     fields.update(parse_sat_delta(html))
     return fields
 
 
-def _buscar_html(sess: requests.Session, url: str, fields: dict[str, str], extra: dict[str, str]) -> str:
+def _buscar_html(
+    sess: requests.Session,
+    url: str,
+    fields: dict[str, str],
+    extra: dict[str, str],
+    *,
+    style: str = "phpcfdi",
+) -> str:
     post = dict(fields)
+    post.update(AJAX_RDO_FECHAS)
+    post.update(query_filters())
     post.update(extra)
-    post["ctl00$MainContent$BtnBusqueda"] = "Buscar CFDI"
-    post["ctl00$MainContent$DdlEstadoComprobante"] = post.get("ctl00$MainContent$DdlEstadoComprobante") or "-1"
-    post["__ASYNCPOST"] = "true"
-    post["ctl00$ScriptManager1"] = "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$BtnBusqueda"
-    post["__EVENTTARGET"] = ""
+    if style == "btn":
+        post["__EVENTTARGET"] = ""
+        post["ctl00$ScriptManager1"] = "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$BtnBusqueda"
     return _ajax(sess, url, post)
+
+
+def _buscar_full(sess: requests.Session, url: str, fields: dict[str, str], extra: dict[str, str]) -> str:
+    post = dict(fields)
+    post.update(query_filters())
+    post["ctl00$MainContent$FiltroCentral"] = "RdoFechas"
+    post.update(extra)
+    post.pop("__ASYNCPOST", None)
+    post.pop("ctl00$ScriptManager1", None)
+    r = sess.post(
+        url,
+        data=post,
+        headers={"Referer": url, "User-Agent": UA, "Origin": "https://portalcfdi.facturaelectronica.sat.gob.mx"},
+        timeout=90,
+        allow_redirects=True,
+    )
+    return _response_text(r)
 
 
 class _LinkParser(HTMLParser):
@@ -311,6 +369,25 @@ def _collect(html: str) -> tuple[list[str], list[str]]:
     return extract_download_targets(html_from_delta(html))
 
 
+def _search_once(
+    sess: requests.Session,
+    url: str,
+    fields: dict[str, str],
+    extra: dict[str, str],
+) -> tuple[list[str], list[str], str, dict[str, str]]:
+    last = ""
+    for style in ("phpcfdi", "btn"):
+        last = _buscar_html(sess, url, fields, extra, style=style)
+        fields.update(parse_sat_delta(last))
+        u, h = _collect(last)
+        if u or h:
+            return u, h, last, fields
+    last = _buscar_full(sess, url, fields, extra)
+    fields.update(parse_sat_delta(last))
+    u, h = _collect(last)
+    return u, h, last, fields
+
+
 def descargar_con_sesion(
     cookies: list[tuple[str, str, str, str]] | None = None,
     *,
@@ -330,21 +407,19 @@ def descargar_con_sesion(
     html0 = probe_session(sess, sentido).replace("charset=utf-16", "charset=utf-8")
     url = CONSULTA.get(sentido, CONSULTA["recibidas"])
     fields = parse_form(html0)
-    if fields:
-        fields = _select_fechas(sess, url, fields)
+    if not fields:
+        raise SatError("El portal no entregó el formulario de consulta. Reentra en Home.")
+    fields = _select_fechas(sess, url, fields)
 
     uuids: list[str] = []
     hrefs: list[str] = []
+    last_html = ""
     days = _days(fecha_ini, fecha_fin)
     for day in days:
-        extra = date_filters(sentido, day, day if sentido == "recibidas" else days[-1])
-        html = _buscar_html(sess, url, fields, extra)
-        fields.update(parse_sat_delta(html))
-        u, h = _collect(html)
+        extra = date_filters(sentido, day, day)
+        u, h, last_html, fields = _search_once(sess, url, fields, extra)
         uuids.extend(u)
         hrefs.extend(h)
-        if sentido == "emitidas":
-            break
 
     if extra_html:
         u2, h2 = extract_download_targets(extra_html)
@@ -369,27 +444,9 @@ def descargar_con_sesion(
             written.append(got)
             have.add(uuid.upper())
     if not written:
-        if sentido == "emitidas" and len(days) > 1:
-            for day in days:
-                html = _buscar_html(sess, url, fields, date_filters("emitidas", day, day))
-                fields.update(parse_sat_delta(html))
-                u, h = _collect(html)
-                for href in h:
-                    got = download_url(sess, href, dest)
-                    if got:
-                        written.append(got)
-                have = {p.stem.upper() for p in written}
-                for uuid in u:
-                    if uuid.upper() in have:
-                        continue
-                    got = recover_by_uuid(sess, uuid, dest)
-                    if got:
-                        written.append(got)
-                        have.add(uuid.upper())
-        if not written:
-            raise SatError(
-                f"Sesión SAT viva, pero el portal no soltó XML "
-                f"({len(uuids)} UUID, {len(hrefs)} ligas). "
-                "Prueba un rango más corto o e.firma."
-            )
+        snippet = re.sub(r"\s+", " ", last_html or "")[:180]
+        raise SatError(
+            f"Sesión SAT viva, pero el portal no soltó XML "
+            f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
+        )
     return written
