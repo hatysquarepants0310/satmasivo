@@ -3,6 +3,7 @@ from pathlib import Path
 from satmasivo.cfdi import format_fecha_masiva, parse_cfdi, scan_folder
 from satmasivo.excel import RESUMEN_COLS, export_excel
 from satmasivo.pdf import cfdi_to_pdf
+from satmasivo.validar import expresion_impresa, parse_consulta_xml
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -52,3 +53,29 @@ def test_pdf(tmp_path):
     cfdi_to_pdf(FIXTURES / "cfdi_ingreso.xml", dest)
     assert dest.is_file()
     assert dest.stat().st_size > 500
+
+
+def test_expresion_impresa_y_soap():
+    row = parse_cfdi(FIXTURES / "cfdi_ingreso.xml")
+    expr = expresion_impresa(row)
+    assert "re=EKU9003173C9" in expr
+    assert "rr=XAXX010101000" in expr
+    assert "tt=1160" in expr
+    assert "id=11111111-2222-3333-4444-555555555555" in expr
+    soap = """
+    <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+      <s:Body>
+        <ConsultaResponse xmlns="http://tempuri.org/">
+          <ConsultaResult xmlns:a="http://schemas.datacontract.org/2004/07/Sat.Cfdi.Negocio.ConsultaCfdi.Servicio">
+            <a:CodigoEstatus>S - Comprobante obtenido satisfactoriamente.</a:CodigoEstatus>
+            <a:EsCancelable>Cancelable sin aceptación</a:EsCancelable>
+            <a:Estado>Vigente</a:Estado>
+            <a:EstatusCancelacion/>
+          </ConsultaResult>
+        </ConsultaResponse>
+      </s:Body>
+    </s:Envelope>
+    """
+    data = parse_consulta_xml(soap)
+    assert data["Estado"] == "Vigente"
+    assert data["EsCancelable"].startswith("Cancelable")

@@ -135,8 +135,9 @@ class SatMasivoApp(tk.Tk):
         self._busy = False
         self._download_dir = Path.home() / "satmasivo"
         self._download_dir.mkdir(exist_ok=True)
-        prev = str(load_config().get("last_lote") or "")
+        prev = str(load_config().get("last_sesion") or load_config().get("last_lote") or "")
         self._last_lote = Path(prev) if prev else None
+        self._session_dir: Path | None = self._last_lote if self._last_lote and self._last_lote.is_dir() else None
         self.ciec = CiecClient()
         self._logged_rfc = ""
         self._login_busy = False
@@ -386,6 +387,7 @@ class SatMasivoApp(tk.Tk):
     def _login_ok(self, rfc: str) -> None:
         self._login_busy = False
         self._logged_rfc = rfc
+        self._session_dir = None
         self.ent_pwd.delete(0, tk.END)
         self.ent_cap.delete(0, tk.END)
         self.lbl_login.configure(text=f"Sesión {rfc}")
@@ -401,11 +403,22 @@ class SatMasivoApp(tk.Tk):
             self.lbl_login.configure(text=msg)
         messagebox.showerror("Login SAT", msg)
 
-    def _remember_lote(self, dest: Path) -> None:
+    def _remember_sesion(self, dest: Path) -> None:
+        self._session_dir = dest
         self._last_lote = dest
         cfg = load_config()
+        cfg["last_sesion"] = str(dest)
         cfg["last_lote"] = str(dest)
         save_config(cfg)
+
+    def _ensure_session_dir(self, dest_base: str, rfc: str) -> Path:
+        if self._session_dir and self._session_dir.is_dir():
+            return self._session_dir
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        root = Path(dest_base) / "sesion-sat" / rfc / stamp
+        root.mkdir(parents=True, exist_ok=True)
+        self._remember_sesion(root)
+        return root
 
     def on_reporte_carpeta(self) -> None:
         folder = filedialog.askdirectory(title="Carpeta con XML")
@@ -422,15 +435,23 @@ class SatMasivoApp(tk.Tk):
         self._run_bg("Generando reporte…", lambda: self._job_reporte(folder, dest, True))
 
     def on_reporte_actual(self) -> None:
-        lote = self._last_lote
-        if lote is None or not lote.is_dir() or not any(lote.rglob("*.xml")):
+        ses = self._session_dir or self._last_lote
+        if ses is None or not Path(ses).is_dir() or not any(Path(ses).rglob("*.xml")):
             messagebox.showerror(
                 "Reporte",
-                "No hay un lote. Primero Descargar. Para otra carpeta usa «Reporte CFDi de una carpeta».",
+                "No hay XML en esta sesión. Primero Descargar (recibidas y/o emitidas).",
             )
             return
-        dest = lote / "reporte.xlsx"
-        self._run_bg("Generando reporte del último lote…", lambda: self._job_reporte(str(lote), str(dest), True))
+        dest = filedialog.asksaveasfilename(
+            title="Guardar reporte de la sesión",
+            defaultextension=".xlsx",
+            initialdir=str(ses),
+            initialfile="reporte.xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+        )
+        if not dest:
+            return
+        self._run_bg("Generando reporte de la sesión…", lambda: self._job_reporte(str(ses), dest, True))
 
     def on_xml_pdf(self) -> None:
         xml = filedialog.askopenfilename(title="CFDI XML", filetypes=[("XML", "*.xml")])
@@ -634,7 +655,7 @@ class SatMasivoApp(tk.Tk):
         )
         if not sol.id_solicitud:
             raise SatError(f"{sol.codigo} {sol.mensaje}".strip() or "Solicitud rechazada")
-        dest = Path(args["dest"]) / fiel.rfc / args["sentido"] / args["ini"]
+        dest = self._ensure_session_dir(args["dest"], fiel.rfc) / args["sentido"]
         dest.mkdir(parents=True, exist_ok=True)
         last = None
         for _ in range(90):
@@ -662,7 +683,7 @@ class SatMasivoApp(tk.Tk):
         return self._finish_rows(dest, args["validar"], fiel.rfc, extra=f"Solicitud {sol.id_solicitud}\n")
 
     def _job_descarga_ciec(self, args: dict) -> str:
-        dest = Path(args["dest"]) / "sesion-sat" / args["sentido"] / args["ini"]
+        dest = self._ensure_session_dir(args["dest"], self._logged_rfc) / args["sentido"]
         files = descargar_con_sesion(
             sess=self.ciec.sess,
             sentido=args["sentido"],
@@ -676,8 +697,9 @@ class SatMasivoApp(tk.Tk):
         )
 
     def _finish_rows(self, dest: Path, validar: bool, rfc: str | None, extra: str = "") -> str:
-        self._remember_lote(dest)
-        rows = scan_folder(dest)
+        root = dest if dest.name not in {"recibidas", "emitidas"} else dest.parent
+        self._remember_sesion(root)
+        rows = scan_folder(root)
         if validar and rows:
 
             def on_val(i, total, uuid):
@@ -694,8 +716,8 @@ class SatMasivoApp(tk.Tk):
 
             rows = validar_rows(rows, progress=on_val)
         if rows:
-            export_excel(rows, dest / "reporte.xlsx", rfc_firma=rfc)
-        return f"{extra}{len(rows)} comprobantes\n{dest}"
+            export_excel(rows, root / "reporte.xlsx", rfc_firma=rfc)
+        return f"{extra}{len(rows)} comprobantes\n{root}"
 
     def _job_check_update(self) -> str:
         try:

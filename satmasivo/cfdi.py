@@ -144,6 +144,7 @@ class PagoDocto:
 class CfdiRow:
     archivo: str = ""
     uuid: str = ""
+    sello_cfdi: str = ""
     fecha: str = ""
     tipo_documento: str = ""
     tipo_comprobante: str = ""
@@ -491,6 +492,7 @@ def parse_cfdi(path: str | Path) -> CfdiRow:
             name = _local(child.tag)
             if name == "TimbreFiscalDigital":
                 row.uuid = child.get("UUID", "")
+                row.sello_cfdi = child.get("SelloCFD", "") or child.get("SelloCFDI", "")
             elif name in {"Pagos", "Pago"}:
                 row.complemento_pago = "Sí"
         row.pagos = _parse_pagos(complemento)

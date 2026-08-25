@@ -1,48 +1,85 @@
-"""Consulta de estatus ante el SAT (servicio público de QR)."""
+"""Consulta de estatus ante el SAT (SOAP oficial, no el JSON que da 400)."""
 
 from __future__ import annotations
 
-from urllib.parse import quote
-
-import requests
+from decimal import Decimal
+from xml.etree import ElementTree as ET
 
 from satmasivo.cfdi import CfdiRow
 from satmasivo.http import sat_session
 
-CONSULTA = "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc/json/Consulta"
+SOAP_URL = "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc"
+SOAP_ACTION = "http://tempuri.org/IConsultaCFDIService/Consulta"
 _HTTP = sat_session(insecure=True)
 
+NS = {
+    "s": "http://schemas.xmlsoap.org/soap/envelope/",
+    "a": "http://schemas.datacontract.org/2004/07/Sat.Cfdi.Negocio.ConsultaCfdi.Servicio",
+}
 
-def consultar_estatus(row: CfdiRow, timeout: float = 20.0) -> CfdiRow:
+
+def expresion_impresa(row: CfdiRow) -> str:
+    total = row.total if isinstance(row.total, Decimal) else Decimal(str(row.total or 0))
+    tt = format(total, "f")
+    if "." in tt:
+        tt = tt.rstrip("0").rstrip(".")
+    if "." not in tt:
+        tt = tt + ".0"
+    parts = [
+        f"re={row.rfc_emisor}",
+        f"rr={row.rfc_receptor}",
+        f"tt={tt}",
+        f"id={row.uuid}",
+    ]
+    if row.sello_cfdi and len(row.sello_cfdi) >= 8:
+        parts.append(f"fe={row.sello_cfdi[-8:]}")
+    return "?" + "&".join(parts)
+
+
+def _soap_body(expr: str) -> bytes:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
+        'xmlns:tem="http://tempuri.org/">'
+        "<soapenv:Header/><soapenv:Body><tem:Consulta>"
+        f"<tem:expresionImpresa><![CDATA[{expr}]]></tem:expresionImpresa>"
+        "</tem:Consulta></soapenv:Body></soapenv:Envelope>"
+    ).encode("utf-8")
+
+
+def parse_consulta_xml(xml: str) -> dict[str, str]:
+    root = ET.fromstring(xml)
+    out = {"Estado": "", "EsCancelable": "", "EstatusCancelacion": "", "CodigoEstatus": ""}
+    for el in root.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag in out:
+            out[tag] = (el.text or "").strip()
+    return out
+
+
+def consultar_estatus(row: CfdiRow, timeout: float = 25.0) -> CfdiRow:
     if not row.uuid or not row.rfc_emisor or not row.rfc_receptor:
-        row.estatus_sat = "Datos incompletos"
+        row.estatus_sat = ""
         return row
-    total = f"{row.total:.6f}"
-    params = {
-        "re": row.rfc_emisor,
-        "rr": row.rfc_receptor,
-        "tt": total,
-        "id": row.uuid,
-    }
+    expr = expresion_impresa(row)
     try:
-        r = _HTTP.get(CONSULTA, params=params, timeout=timeout)
+        r = _HTTP.post(
+            SOAP_URL,
+            data=_soap_body(expr),
+            headers={
+                "Content-Type": "text/xml; charset=utf-8",
+                "SOAPAction": SOAP_ACTION,
+            },
+            timeout=timeout,
+        )
         r.raise_for_status()
-        data = r.json()
-    except Exception as exc:
-        row.estatus_sat = f"Error consulta: {exc}"
+        data = parse_consulta_xml(r.text)
+    except Exception:
+        row.estatus_sat = ""
         return row
-    # SAT JSON keys vary slightly between deployments
-    row.estatus_sat = (
-        data.get("CodigoEstatus")
-        or data.get("EsCancelable")
-        or data.get("Estado")
-        or ""
-    )
-    estado = data.get("Estado") or data.get("Estatus") or ""
-    if estado:
-        row.estatus_sat = str(estado)
-    row.cancelable = str(data.get("EsCancelable") or "")
-    row.estatus_cancelacion = str(data.get("EstatusCancelacion") or "")
+    row.estatus_sat = data.get("Estado") or ""
+    row.cancelable = data.get("EsCancelable") or ""
+    row.estatus_cancelacion = data.get("EstatusCancelacion") or ""
     return row
 
 
