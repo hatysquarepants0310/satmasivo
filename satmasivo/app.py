@@ -10,6 +10,7 @@ from datetime import date, datetime
 from calendar import monthrange
 from io import BytesIO
 from pathlib import Path
+import uuid as uuidlib
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
@@ -137,7 +138,7 @@ class SatMasivoApp(tk.Tk):
         self._download_dir.mkdir(exist_ok=True)
         prev = str(load_config().get("last_sesion") or load_config().get("last_lote") or "")
         self._last_lote = Path(prev) if prev else None
-        self._session_dir: Path | None = self._last_lote if self._last_lote and self._last_lote.is_dir() else None
+        self._session_dir: Path | None = None
         self.ciec = CiecClient()
         self._logged_rfc = ""
         self._login_busy = False
@@ -414,8 +415,8 @@ class SatMasivoApp(tk.Tk):
     def _ensure_session_dir(self, dest_base: str, rfc: str) -> Path:
         if self._session_dir and self._session_dir.is_dir():
             return self._session_dir
-        stamp = datetime.now().strftime("%Y%m%d-%H%M")
-        root = Path(dest_base) / "sesion-sat" / rfc / stamp
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuidlib.uuid4().hex[:6]
+        root = Path(dest_base) / "sesion-sat" / (rfc or "sin-rfc") / stamp
         root.mkdir(parents=True, exist_ok=True)
         self._remember_sesion(root)
         return root
@@ -435,7 +436,7 @@ class SatMasivoApp(tk.Tk):
         self._run_bg("Generando reporte…", lambda: self._job_reporte(folder, dest, True))
 
     def on_reporte_actual(self) -> None:
-        ses = self._session_dir or self._last_lote
+        ses = self._session_dir
         if ses is None or not Path(ses).is_dir() or not any(Path(ses).rglob("*.xml")):
             messagebox.showerror(
                 "Reporte",

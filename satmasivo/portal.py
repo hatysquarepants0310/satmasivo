@@ -100,10 +100,19 @@ def parse_form(html: str) -> dict[str, str]:
 def html_from_delta(source: str) -> str:
     """El SAT manda la tabla dentro de un updatePanel |pipe|."""
     raw = source or ""
-    if "AccionCfdi" in raw or "tblResult" in raw:
-        chunks = [p for p in raw.split("|") if "AccionCfdi" in p or "tblResult" in p or "<table" in p.lower()]
-        return "\n".join(chunks) if chunks else raw
-    return raw
+    if "|" not in raw[:80] and "AccionCfdi" not in raw and "tblResult" not in raw:
+        return raw
+    chunks = [
+        p
+        for p in raw.split("|")
+        if "AccionCfdi" in p
+        or "tblResult" in p
+        or "<table" in p.lower()
+        or "Folio Fiscal" in p
+        or "gvCfdi" in p
+        or UUID_RE.search(p)
+    ]
+    return "\n".join(chunks) if chunks else raw
 
 
 def parse_sat_delta(source: str) -> dict[str, str]:
@@ -343,26 +352,92 @@ def logged_in(html: str, final_url: str) -> bool:
     return True
 
 
-def extract_folio_map(html: str, base: str = PORTAL) -> dict[str, str]:
-    """UUID de la fila → liga AccionCfdi. Un folio, una liga."""
+class _ResultRows(HTMLParser):
+    """Filas de la tabla SAT: primer UUID = folio, AccionCfdi = liga."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[tuple[str, str]] = []
+        self._in_tr = 0
+        self._uuids: list[str] = []
+        self._hrefs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        ad = {k.lower(): (v or "") for k, v in attrs}
+        if tag.lower() == "tr":
+            self._in_tr += 1
+            if self._in_tr == 1:
+                self._uuids = []
+                self._hrefs = []
+        if self._in_tr < 1:
+            return
+        for key in ("onclick", "href"):
+            val = ad.get(key, "")
+            if not val:
+                continue
+            for raw in ACCION_RE.findall(val):
+                self._hrefs.append(raw.replace("\\/", "/"))
+            if re.search(r"RecuperaCfdi|Recuperacion|DescargaXml", val, re.I) and not val.startswith("javascript:"):
+                self._hrefs.append(val)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_tr:
+            self._uuids.extend(u.upper() for u in UUID_RE.findall(data or ""))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "tr" or self._in_tr < 1:
+            return
+        self._in_tr -= 1
+        if self._in_tr:
+            return
+        if not self._uuids:
+            return
+        href = ""
+        if self._hrefs:
+            raw = self._hrefs[0]
+            href = raw if raw.startswith("http") else urljoin(PORTAL, raw.lstrip("/"))
+        self.rows.append((self._uuids[0], href))
+
+
+def extract_table_rows(html: str, base: str = PORTAL) -> list[tuple[str, str]]:
     html = html_from_delta(html or "")
-    out: dict[str, str] = {}
+    html = (
+        html.replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("\\/", "/")
+    )
+    p = _ResultRows()
+    try:
+        p.feed(html)
+    except Exception:
+        p.rows = []
+    if p.rows:
+        return p.rows
+    out: list[tuple[str, str]] = []
     for row in re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.I | re.S):
-        hrefs = extract_accion_urls(row, base)
         uids = [u.upper() for u in UUID_RE.findall(row)]
-        if hrefs and uids:
-            out.setdefault(uids[0], hrefs[0])
-    for href in extract_accion_urls(html, base):
-        found = UUID_RE.search(href)
-        if found:
-            out.setdefault(found.group(0).upper(), href)
+        hrefs = extract_accion_urls(row, base)
+        if uids:
+            out.append((uids[0], hrefs[0] if hrefs else ""))
+    return out
+
+
+def extract_folio_map(html: str, base: str = PORTAL) -> dict[str, str]:
+    """UUID de la fila → liga AccionCfdi. Solo si hay botón."""
+    out: dict[str, str] = {}
+    for uid, href in extract_table_rows(html, base):
+        if href:
+            out.setdefault(uid, href)
     return out
 
 
 def extract_download_targets(html: str, base: str = PORTAL) -> tuple[list[str], list[str]]:
-    fmap = extract_folio_map(html, base)
-    if fmap:
-        return list(fmap.keys()), list(dict.fromkeys(fmap.values()))
+    rows = extract_table_rows(html, base)
+    uuids = list(dict.fromkeys(u for u, _ in rows))
+    hrefs = list(dict.fromkeys(h for _, h in rows if h))
+    if uuids or hrefs:
+        return uuids, hrefs
     html = html_from_delta(html or "")
     hrefs = extract_accion_urls(html, base)
     parser = _LinkParser()
@@ -373,10 +448,10 @@ def extract_download_targets(html: str, base: str = PORTAL) -> tuple[list[str], 
         if re.search(r"RecuperaCfdi|Recuperacion|DescargaXml", raw, re.I):
             hrefs.append(urljoin(base, raw))
     hrefs = list(dict.fromkeys(hrefs))
-    uuids: list[str] = []
+    found: list[str] = []
     for h in hrefs:
-        uuids.extend(UUID_RE.findall(h))
-    return list(dict.fromkeys(u.upper() for u in uuids)), hrefs
+        found.extend(u.upper() for u in UUID_RE.findall(h))
+    return list(dict.fromkeys(found)), hrefs
 
 
 def looks_like_xml(data: bytes) -> bool:
