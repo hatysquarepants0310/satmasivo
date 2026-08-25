@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
-from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
+from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_result_pages, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -148,6 +148,13 @@ def test_plan_xml_jobs_skips_uuid_already_in_href():
     assert kinds.count("href") == 1
     assert ("uuid", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE") in jobs
     assert not any(p.endswith("555555555555") and k == "uuid" for k, p in jobs)
+
+
+def test_extract_result_pages():
+    html = "javascript:__doPostBack('ctl00$MainContent$gvCfdi','Page$2'); __doPostBack('ctl00$MainContent$gvCfdi','Page$3')"
+    pages = extract_result_pages(html)
+    assert ("ctl00$MainContent$gvCfdi", "2") in pages
+    assert ("ctl00$MainContent$gvCfdi", "3") in pages
 
 
 

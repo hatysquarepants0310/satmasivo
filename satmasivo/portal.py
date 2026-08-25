@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 import uuid as uuidlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -33,7 +34,9 @@ AJAX_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
 }
-XML_WORKERS = 10
+XML_WORKERS = 3
+XML_RETRIES = 4
+PAGE_RE = re.compile(r"__doPostBack\(\s*'([^']+)'\s*,\s*'Page\$(\d+)'")
 
 
 class _FormParser(HTMLParser):
@@ -390,6 +393,19 @@ def probe_session(sess: requests.Session, sentido: str) -> str:
     return r.text
 
 
+def extract_result_pages(html: str) -> list[tuple[str, str]]:
+    return list(dict.fromkeys(PAGE_RE.findall(html or "")))
+
+
+def _page_html(sess: requests.Session, url: str, fields: dict[str, str], target: str, page: str) -> str:
+    post = dict(fields)
+    post.update(AJAX_RDO_FECHAS)
+    post["__EVENTTARGET"] = target
+    post["__EVENTARGUMENT"] = f"Page${page}"
+    post["ctl00$ScriptManager1"] = f"ctl00$MainContent$UpnlResultados|{target}"
+    return _ajax(sess, url, post)
+
+
 def _collect(html: str) -> tuple[list[str], list[str]]:
     return extract_download_targets(html_from_delta(html))
 
@@ -401,16 +417,30 @@ def _search_once(
     extra: dict[str, str],
 ) -> tuple[list[str], list[str], str, dict[str, str]]:
     last = ""
+    uuids: list[str] = []
+    hrefs: list[str] = []
     for style in ("phpcfdi", "btn"):
         last = _buscar_html(sess, url, fields, extra, style=style)
         fields.update(parse_sat_delta(last))
-        u, h = _collect(last)
-        if u or h:
-            return u, h, last, fields
-    last = _buscar_full(sess, url, fields, extra)
-    fields.update(parse_sat_delta(last))
-    u, h = _collect(last)
-    return u, h, last, fields
+        uuids, hrefs = _collect(last)
+        if uuids or hrefs:
+            break
+    else:
+        last = _buscar_full(sess, url, fields, extra)
+        fields.update(parse_sat_delta(last))
+        uuids, hrefs = _collect(last)
+    seen_pages = {"1"}
+    for target, page in extract_result_pages(last):
+        if page in seen_pages:
+            continue
+        seen_pages.add(page)
+        html = _page_html(sess, url, fields, target, page)
+        fields.update(parse_sat_delta(html))
+        u, h = _collect(html)
+        uuids.extend(u)
+        hrefs.extend(h)
+        last = html
+    return list(dict.fromkeys(uuids)), list(dict.fromkeys(hrefs)), last, fields
 
 
 def descargar_con_sesion(
@@ -490,39 +520,63 @@ def descargar_con_sesion(
     lock = threading.Lock()
     done = 0
 
-    def one(job: tuple[str, str]) -> Path | None:
+    def try_job(job: tuple[str, str]) -> Path | None:
         kind, payload = job
-        worker = clone_session(sess)
-        try:
-            if kind == "href":
-                return download_url(worker, payload, dest)
-            return recover_by_uuid(worker, payload, dest)
-        except Exception:
-            return None
-        finally:
-            worker.close()
+        for attempt in range(XML_RETRIES):
+            worker = clone_session(sess)
+            try:
+                got = download_url(worker, payload, dest) if kind == "href" else recover_by_uuid(worker, payload, dest)
+                if got:
+                    return got
+            except Exception:
+                got = None
+            finally:
+                worker.close()
+            time.sleep(0.5 * (attempt + 1))
+        return None
 
-    workers = min(XML_WORKERS, total_jobs)
+    workers = min(XML_WORKERS, max(len(jobs), 1))
     note(phase="xml", done=0, total=total_jobs, msg=f"Bajando {len(jobs)} XML × {workers} hilos")
-    if jobs:
+    pending = list(jobs)
+    if pending:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(one, job): job for job in jobs}
+            futures = {pool.submit(try_job, job): job for job in pending}
+            failed: list[tuple[str, str]] = []
             for fut in as_completed(futures):
+                job = futures[fut]
                 got = fut.result()
                 with lock:
-                    done += 1
-                    uid = got.stem.upper() if got else ""
                     if got:
+                        done += 1
                         written.append(got)
-                        have.add(uid)
-                    note(
-                        phase="xml",
-                        done=done,
-                        total=total_jobs,
-                        uuid=uid,
-                        ok=bool(got),
-                        msg=f"XML {done}/{total_jobs}" + (f"  {uid}" if uid else ""),
-                    )
+                        have.add(got.stem.upper())
+                        note(
+                            phase="xml",
+                            done=done,
+                            total=total_jobs,
+                            uuid=got.stem.upper(),
+                            ok=True,
+                            msg=f"XML {done}/{total_jobs}  {got.stem.upper()}",
+                        )
+                    else:
+                        failed.append(job)
+            pending = failed
+    if pending:
+        note(phase="xml", done=done, total=total_jobs, msg=f"Reintento lento de {len(pending)} XML")
+        for job in pending:
+            got = try_job(job)
+            done += 1
+            uid = got.stem.upper() if got else job[1][:36]
+            if got:
+                written.append(got)
+            note(
+                phase="xml",
+                done=min(done, total_jobs),
+                total=total_jobs,
+                uuid=uid if got else "",
+                ok=bool(got),
+                msg=f"XML {len(written)}/{total_jobs}" + (f"  {uid}" if got else "  (falló)"),
+            )
     if not written:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
