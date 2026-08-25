@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import re
-import threading
-import time
+import io
+import zipfile
 import uuid as uuidlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -455,22 +454,53 @@ def extract_download_targets(html: str, base: str = PORTAL) -> tuple[list[str], 
 
 
 def looks_like_xml(data: bytes) -> bool:
-    head = data.lstrip()[:200].lower()
-    return head.startswith(b"<?xml") or b"<cfdi:comprobante" in head or b"<comprobante" in head
+    sample = data[:4096] if data else b""
+    if sample[:2] == b"PK":
+        return True
+    low = sample.lower()
+    if b"\x00" in sample[:80]:
+        try:
+            low = sample.decode("utf-16", errors="ignore").lower().encode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    return b"<?xml" in low or b"cfdi:comprobante" in low or b"<comprobante" in low
 
 
-def download_url(sess: requests.Session, url: str, dest_dir: Path) -> Path | None:
-    r = sess.get(url, timeout=(8, 18), allow_redirects=True, headers={"Referer": PORTAL, "User-Agent": UA})
+def _xml_bytes(data: bytes) -> bytes | None:
+    if data[:2] == b"PK":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for name in zf.namelist():
+                    raw = zf.read(name)
+                    if looks_like_xml(raw) and raw[:2] != b"PK":
+                        return raw
+        except zipfile.BadZipFile:
+            return None
+        return None
+    return data if looks_like_xml(data) else None
+
+
+def download_url(sess: requests.Session, url: str, dest_dir: Path, referer: str = PORTAL) -> Path | None:
+    if not url:
+        return None
+    r = sess.get(
+        url,
+        timeout=(10, 45),
+        allow_redirects=True,
+        headers={"Referer": referer, "User-Agent": UA, "Accept": "*/*"},
+    )
     if r.status_code >= 400 or not r.content:
         return None
-    if not looks_like_xml(r.content):
+    body = _xml_bytes(r.content)
+    if body is None:
         return None
-    found = UUID_RE.search(r.content.decode("utf-8", errors="ignore"))
-    name = found.group(0).upper() + ".xml" if found else ""
-    if not name:
-        name = f"cfdi-{uuidlib.uuid4().hex[:12]}.xml"
+    text = body.decode("utf-8", errors="ignore")
+    if "\x00" in body[:80].decode("latin-1", errors="ignore"):
+        text = body.decode("utf-16", errors="ignore")
+    found = UUID_RE.search(text)
+    name = found.group(0).upper() + ".xml" if found else f"cfdi-{uuidlib.uuid4().hex[:12]}.xml"
     path = dest_dir / name
-    path.write_bytes(r.content)
+    path.write_bytes(body)
     return path
 
 
@@ -609,12 +639,8 @@ def descargar_con_sesion(
             raise SatError("La ventana no entregó cookies del SAT. Recarga e inicia sesión.")
         sess = session_from_cookies(cookies)
     note(phase="consulta", msg="Abriendo consulta SAT…", done=0, total=1)
-    html0 = probe_session(sess, sentido).replace("charset=utf-16", "charset=utf-8")
     url = CONSULTA.get(sentido, CONSULTA["recibidas"])
-    fields = parse_form(html0)
-    if not fields:
-        raise SatError("El portal no entregó el formulario de consulta. Reentra en Home.")
-    fields = _select_fechas(sess, url, fields)
+    probe_session(sess, sentido)
 
     uuids: list[str] = []
     hrefs: list[str] = []
@@ -630,11 +656,18 @@ def descargar_con_sesion(
             days=ndays,
             done=i,
             total=ndays,
-            found=len(folio_href),
+            found=len(uuids),
             msg=f"Buscando {day}  ({i}/{ndays})",
         )
+        r0 = sess.get(url, timeout=40, allow_redirects=True, headers={"User-Agent": UA, "Referer": PORTAL})
+        if not logged_in(r0.text, r0.url):
+            raise SatError("Se cayó la sesión SAT. Entra otra vez en Home.")
+        fields = parse_form(r0.text)
+        if not fields:
+            raise SatError("El portal no entregó el formulario de consulta. Reentra en Home.")
+        fields = _select_fechas(sess, url, fields)
         extra = date_filters(sentido, day, day)
-        u, h, last_html, fields, fmap = _search_once(sess, url, fields, extra)
+        u, h, last_html, _fields, fmap = _search_once(sess, url, fields, extra)
         uuids.extend(u)
         hrefs.extend(h)
         folio_href.update(fmap)
@@ -646,8 +679,8 @@ def descargar_con_sesion(
                 days=ndays,
                 done=i,
                 total=ndays,
-                found=len(fmap) or len(u),
-                msg=f"{day}: {len(fmap) or len(u)} folios",
+                found=len(u) or len(fmap),
+                msg=f"{day}: {len(u) or len(fmap)} folios",
             )
 
     if extra_html:
@@ -669,14 +702,8 @@ def descargar_con_sesion(
     missing_uuids = [u for u in uuids if u not in folio_href]
     total_jobs = len(folio_href) + len(missing_uuids)
     written: list[Path] = []
-    have: set[str] = {p.stem.upper() for p in dest.glob("*.xml")}
-    for p in dest.glob("*.xml"):
-        written.append(p)
-    lock = threading.Lock()
-
-    def disk(uid: str) -> Path | None:
-        p = dest / f"{uid.upper()}.xml"
-        return p if p.is_file() else None
+    have: set[str] = set()
+    referer = url
 
     def mark(got: Path) -> None:
         uid = got.stem.upper()
@@ -692,15 +719,6 @@ def descargar_con_sesion(
             msg=f"{len(have)}/{total_jobs}  {uid}",
         )
 
-    def try_href(href: str) -> Path | None:
-        worker = clone_session(sess)
-        try:
-            return download_url(worker, href, dest)
-        except Exception:
-            return None
-        finally:
-            worker.close()
-
     if total_jobs == 0:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
@@ -708,97 +726,40 @@ def descargar_con_sesion(
             f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
         )
 
-    pending_href: list[tuple[str, str]] = []
-    pending_uuid: list[str] = list(missing_uuids)
+    queue: list[tuple[str, str]] = []
     for uid, href in folio_href.items():
-        if uid.startswith("HREF:"):
-            pending_href.append(("", href))
-        elif (got := disk(uid)):
+        queue.append((uid, href))
+    for uid in missing_uuids:
+        queue.append((uid, urljoin(PORTAL, f"RecuperaCfdi.aspx?folioFiscal={uid}")))
+
+    note(phase="xml", done=0, total=total_jobs, msg=f"Detectados {total_jobs}. Bajando uno por uno.")
+    failed: list[str] = []
+    for i, (uid, href) in enumerate(queue, 1):
+        note(
+            phase="xml",
+            done=len(have),
+            total=total_jobs,
+            uuid=uid if not uid.startswith("HREF:") else "",
+            ok=False,
+            msg=f"XML {i}/{total_jobs}" + (f"  {uid}" if uid and not uid.startswith("HREF:") else ""),
+        )
+        got = None
+        try:
+            got = download_url(sess, href, dest, referer=referer)
+        except Exception:
+            got = None
+        if got:
             mark(got)
         else:
-            pending_href.append((uid, href))
-
-    note(
-        phase="xml",
-        done=len(have),
-        total=total_jobs,
-        msg=f"Detectados {total_jobs} folios. De 10 en 10 hasta el 100%.",
-    )
-    wave = 0
-    empty = 0
-    while pending_href and wave < 2:
-        wave += 1
-        workers = min(XML_WORKERS, len(pending_href))
-        note(
-            phase="xml",
-            done=len(have),
-            total=total_jobs,
-            ok=False,
-            msg=f"Bajando {len(have)}/{total_jobs} · {len(pending_href)} ligas × {workers}",
-        )
-        failed: list[tuple[str, str]] = []
-        gained = 0
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(try_href, href): (uid, href) for uid, href in pending_href}
-            for fut in as_completed(futures):
-                uid, href = futures[fut]
-                got = fut.result()
-                with lock:
-                    if got:
-                        before = len(have)
-                        mark(got)
-                        if len(have) > before:
-                            gained += 1
-                    elif uid:
-                        pending_uuid.append(uid)
-                    else:
-                        failed.append((uid, href))
-        pending_href = failed
-        if gained == 0:
-            empty += 1
-            for uid, _href in pending_href:
-                if uid:
-                    pending_uuid.append(uid)
-            pending_href = []
-            break
-        time.sleep(0.4)
-
-    pending_uuid = [u for u in dict.fromkeys(pending_uuid) if not disk(u)]
-    if pending_uuid:
-        note(
-            phase="xml",
-            done=len(have),
-            total=total_jobs,
-            ok=False,
-            msg=f"Rebuscando {len(pending_uuid)} folios uno por uno",
-        )
-        still: list[str] = []
-        for i, uid in enumerate(pending_uuid, 1):
-            note(
-                phase="xml",
-                done=len(have),
-                total=total_jobs,
-                uuid=uid,
-                ok=False,
-                msg=f"Folio {i}/{len(pending_uuid)}  {uid}",
-            )
-            got = disk(uid)
-            if not got:
-                try:
-                    got = recover_by_uuid(sess, uid, dest, sentido)
-                except Exception:
-                    got = None
-            if got:
-                mark(got)
-            else:
-                still.append(uid)
-        pending_uuid = still
-
-    if pending_href or pending_uuid:
-        left = len(pending_href) + len(pending_uuid)
+            failed.append(uid or href)
+    if failed and not written:
         raise SatError(
-            f"Se detectaron {total_jobs} y bajaron {len(have)}. "
-            f"Quedan {left}. Reintenta Descargar (los que ya están no se pisan)."
+            f"Se detectaron {total_jobs} y no bajó ninguno. "
+            f"La sesión del portal no soltó XML. Entra otra vez y reintenta."
+        )
+    if failed:
+        raise SatError(
+            f"Se detectaron {total_jobs} y bajaron {len(have)}. Quedan {len(failed)}."
         )
     note(phase="listo", done=len(have), total=total_jobs, msg=f"{len(have)}/{total_jobs} XML listos")
     return written
