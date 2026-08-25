@@ -15,7 +15,7 @@ def test_extract_uuids_and_recupera():
     """
     uuids, hrefs = extract_download_targets(html)
     assert "11111111-2222-3333-4444-555555555555" in uuids
-    assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in uuids
+    assert "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE" not in uuids
     assert any("RecuperaCfdi" in h for h in hrefs)
     assert any("Datos=abc" in h for h in hrefs)
 

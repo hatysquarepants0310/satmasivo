@@ -26,6 +26,10 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 ACCION_RE = re.compile(r"AccionCfdi\(['\"]([^'\"]+)['\"]", re.I)
+PAGE_RE = re.compile(
+    r"__doPostBack\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]Page\$(\d+)['\"]",
+    re.I,
+)
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0"
 )
@@ -36,7 +40,6 @@ AJAX_HEADERS = {
 }
 XML_WORKERS = 10
 XML_WAVES = 40
-PAGE_RE = re.compile(r"__doPostBack\(\s*'([^']+)'\s*,\s*'Page\$(\d+)'")
 
 
 class _FormParser(HTMLParser):
@@ -156,8 +159,15 @@ def query_filters() -> dict[str, str]:
 
 
 def extract_accion_urls(html: str, base: str = PORTAL) -> list[str]:
+    html = (
+        (html or "")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("\\/", "/")
+    )
     urls: list[str] = []
-    for raw in ACCION_RE.findall(html or ""):
+    for raw in ACCION_RE.findall(html):
         cleaned = raw.replace("\\/", "/")
         if cleaned.startswith("http"):
             urls.append(cleaned)
@@ -334,18 +344,25 @@ def logged_in(html: str, final_url: str) -> bool:
 
 
 def extract_download_targets(html: str, base: str = PORTAL) -> tuple[list[str], list[str]]:
-    uuids = list(dict.fromkeys(UUID_RE.findall(html)))
+    """Solo filas con botón de descarga. Un UUID suelto en el HTML no es un XML."""
+    html = html_from_delta(html or "")
+    hrefs = extract_accion_urls(html, base)
     parser = _LinkParser()
     parser.feed(html)
-    hrefs: list[str] = []
     for raw in parser.hrefs:
         if not raw or raw.startswith("javascript:"):
             continue
-        if re.search(r"Recupera|Descarga|xml|Cfdi|Comprobante", raw, re.I):
+        if re.search(r"RecuperaCfdi|Recuperacion|DescargaXml", raw, re.I):
             hrefs.append(urljoin(base, raw))
-    hrefs.extend(extract_accion_urls(html, base))
     hrefs = list(dict.fromkeys(hrefs))
-    return uuids, hrefs
+    uuids: list[str] = []
+    for h in hrefs:
+        uuids.extend(UUID_RE.findall(h))
+    for row in re.findall(r"<tr\b[^>]*>.*?</tr>", html, flags=re.I | re.S):
+        if "AccionCfdi" not in row and "Recupera" not in row:
+            continue
+        uuids.extend(UUID_RE.findall(row))
+    return list(dict.fromkeys(u.upper() for u in uuids)), hrefs
 
 
 def looks_like_xml(data: bytes) -> bool:
@@ -368,17 +385,41 @@ def download_url(sess: requests.Session, url: str, dest_dir: Path) -> Path | Non
     return path
 
 
-def recover_by_uuid(sess: requests.Session, uuid: str, dest_dir: Path) -> Path | None:
-    candidates = [
-        urljoin(PORTAL, f"RecuperaCfdi.aspx?folioFiscal={uuid}"),
-        urljoin(PORTAL, f"RecuperaCfdi.aspx?uuid={uuid}"),
-        urljoin(PORTAL, f"Recuperacion/Recuperacion.aspx?folioFiscal={uuid}"),
-        urljoin(PORTAL, f"RepresentacionImpresa.aspx?folioFiscal={uuid}"),
-    ]
-    for url in candidates:
-        got = download_url(sess, url, dest_dir)
-        if got:
-            return got
+def recover_by_uuid(sess: requests.Session, uuid: str, dest_dir: Path, sentido: str = "recibidas") -> Path | None:
+    """Busca el folio en el portal y baja el AccionCfdi. No adivina RecuperaCfdi?uuid=."""
+    url = CONSULTA.get(sentido, CONSULTA["recibidas"])
+    try:
+        r = sess.get(url, timeout=40, allow_redirects=True, headers={"Referer": PORTAL, "User-Agent": UA})
+        fields = parse_form(r.text)
+        fields.update(parse_sat_delta(r.text))
+        fields.update(
+            {
+                "__ASYNCPOST": "true",
+                "__EVENTARGUMENT": "",
+                "__EVENTTARGET": "ctl00$MainContent$RdoFolioFiscal",
+                "__LASTFOCUS": "",
+                "ctl00$MainContent$FiltroCentral": "RdoFolioFiscal",
+                "ctl00$ScriptManager1": "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$RdoFolioFiscal",
+            }
+        )
+        html = _ajax(sess, url, fields)
+        fields.update(parse_sat_delta(html))
+        fields.update(query_filters())
+        fields["ctl00$MainContent$FiltroCentral"] = "RdoFolioFiscal"
+        fields["ctl00$MainContent$TxtUUID"] = uuid.lower()
+        fields["ctl00$MainContent$BtnBusqueda"] = "Buscar CFDI"
+        fields["__EVENTTARGET"] = ""
+        fields["__EVENTARGUMENT"] = ""
+        fields["__ASYNCPOST"] = "true"
+        fields["ctl00$ScriptManager1"] = "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$BtnBusqueda"
+        html = _ajax(sess, url, fields)
+        _u, hrefs = _collect(html)
+        for href in hrefs:
+            got = download_url(sess, href, dest_dir)
+            if got:
+                return got
+    except Exception:
+        return None
     return None
 
 
@@ -430,7 +471,9 @@ def _search_once(
         fields.update(parse_sat_delta(last))
         uuids, hrefs = _collect(last)
     seen_pages = {"1"}
-    for target, page in extract_result_pages(last):
+    queue = extract_result_pages(last)
+    while queue:
+        target, page = queue.pop(0)
         if page in seen_pages:
             continue
         seen_pages.add(page)
@@ -440,6 +483,9 @@ def _search_once(
         uuids.extend(u)
         hrefs.extend(h)
         last = html
+        for item in extract_result_pages(html):
+            if item[1] not in seen_pages:
+                queue.append(item)
     return list(dict.fromkeys(uuids)), list(dict.fromkeys(hrefs)), last, fields
 
 
@@ -514,6 +560,8 @@ def descargar_con_sesion(
     uuids = list(dict.fromkeys(uuids))
     hrefs = list(dict.fromkeys(hrefs))
     jobs = plan_xml_jobs(hrefs, uuids)
+    href_jobs = [j for j in jobs if j[0] == "href"]
+    uuid_jobs = [j for j in jobs if j[0] == "uuid"]
     total_jobs = len(jobs)
     written: list[Path] = []
     have: set[str] = set()
@@ -530,64 +578,106 @@ def descargar_con_sesion(
             return p if p.is_file() else None
         return None
 
-    def try_once(job: tuple[str, str]) -> Path | None:
+    def mark(got: Path) -> None:
+        uid = got.stem.upper()
+        if uid not in have:
+            written.append(got)
+            have.add(uid)
+        note(
+            phase="xml",
+            done=len(written),
+            total=max(total_jobs, 1),
+            uuid=uid,
+            ok=True,
+            msg=f"{len(written)}/{total_jobs}  {uid}",
+        )
+
+    def try_href(job: tuple[str, str]) -> Path | None:
         got = already(job)
         if got:
             return got
-        kind, payload = job
         worker = clone_session(sess)
         try:
-            return download_url(worker, payload, dest) if kind == "href" else recover_by_uuid(worker, payload, dest)
+            return download_url(worker, job[1], dest)
         except Exception:
             return None
         finally:
             worker.close()
 
-    pending = list(jobs)
-    if not pending:
+    if not jobs:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
             f"Sesión SAT viva, pero el portal no soltó XML "
             f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
         )
-    note(phase="xml", done=0, total=total_jobs, msg=f"Detectados {total_jobs}. Bajando de 10 en 10 hasta el 100%.")
+
+    note(
+        phase="xml",
+        done=0,
+        total=total_jobs,
+        msg=f"Detectados {total_jobs} ({len(href_jobs)} ligas). De 10 en 10 hasta el 100%.",
+    )
+    pending = list(href_jobs)
     wave = 0
+    empty = 0
+    workers = XML_WORKERS
     while pending and wave < XML_WAVES:
         wave += 1
-        workers = min(XML_WORKERS, len(pending))
+        workers = 1 if empty else min(XML_WORKERS, len(pending))
         note(
             phase="xml",
             done=len(written),
             total=total_jobs,
-            msg=f"Oleada {wave}: {len(written)}/{total_jobs} listos, {len(pending)} pendientes × {workers}",
+            ok=False,
+            msg=f"Bajando {len(written)}/{total_jobs} · {len(pending)} pendientes × {workers}",
         )
         failed: list[tuple[str, str]] = []
+        gained = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(try_once, job): job for job in pending}
+            futures = {pool.submit(try_href, job): job for job in pending}
             for fut in as_completed(futures):
                 job = futures[fut]
                 got = fut.result()
                 with lock:
                     if got:
-                        if got.stem.upper() not in have:
-                            written.append(got)
-                            have.add(got.stem.upper())
-                        note(
-                            phase="xml",
-                            done=len(written),
-                            total=total_jobs,
-                            uuid=got.stem.upper(),
-                            ok=True,
-                            msg=f"{len(written)}/{total_jobs}  {got.stem.upper()}",
-                        )
+                        before = len(have)
+                        mark(got)
+                        if len(have) > before:
+                            gained += 1
                     else:
                         failed.append(job)
         pending = failed
-        if pending:
-            time.sleep(min(8.0, 1.0 * wave))
+        if not pending:
+            break
+        if gained == 0:
+            empty += 1
+            time.sleep(min(8.0, 2.0 * empty))
+        else:
+            empty = 0
+            time.sleep(0.4)
+
+    if uuid_jobs:
+        note(
+            phase="xml",
+            done=len(written),
+            total=total_jobs,
+            msg=f"Folios sin liga: {len(uuid_jobs)}. Uno por uno.",
+        )
+        for job in uuid_jobs:
+            got = already(job)
+            if not got:
+                try:
+                    got = recover_by_uuid(sess, job[1], dest, sentido)
+                except Exception:
+                    got = None
+            if got:
+                mark(got)
+            else:
+                pending.append(job)
+
     if pending:
         raise SatError(
-            f"Se detectaron {total_jobs} y solo bajaron {len(written)}. "
+            f"Se detectaron {total_jobs} y bajaron {len(written)}. "
             f"Quedan {len(pending)}. Reintenta Descargar (los que ya están no se pisan)."
         )
     note(phase="listo", done=len(written), total=total_jobs, msg=f"{len(written)}/{total_jobs} XML listos")
