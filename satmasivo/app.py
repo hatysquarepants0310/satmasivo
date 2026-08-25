@@ -428,6 +428,7 @@ class SatMasivoApp(tk.Tk):
         dest = filedialog.asksaveasfilename(
             title="Guardar Excel",
             defaultextension=".xlsx",
+            initialdir=str(Path.home()),
             initialfile="reporte-cfdi.xlsx",
             filetypes=[("Excel", "*.xlsx")],
         )
@@ -446,7 +447,7 @@ class SatMasivoApp(tk.Tk):
         dest = filedialog.asksaveasfilename(
             title="Guardar reporte de la sesión",
             defaultextension=".xlsx",
-            initialdir=str(ses),
+            initialdir=str(Path.home()),
             initialfile="reporte.xlsx",
             filetypes=[("Excel", "*.xlsx")],
         )
@@ -637,8 +638,8 @@ class SatMasivoApp(tk.Tk):
             raise SatError(f"No hay XML de CFDI en {folder}")
         if validar:
             rows = validar_rows(rows)
-        export_excel(rows, dest, rfc_firma=self._logged_rfc or None)
-        return f"{len(rows)} comprobantes → {dest}"
+        out = export_excel(rows, dest, rfc_firma=self._logged_rfc or None)
+        return f"{len(rows)} comprobantes → {out}"
 
     def _job_descarga_fiel(self, args: dict) -> str:
         import time

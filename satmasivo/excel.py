@@ -407,10 +407,30 @@ def _write_pagos(ws: Worksheet, rows: list[CfdiRow]) -> None:
     ws.column_dimensions["Q"].width = 38
 
 
+def resolve_xlsx_dest(path: str | Path) -> Path:
+    """Cualquier ruta: absoluta, .xlsx, crea padres. Si no hay permiso, ~/satmasivo."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = Path.home() / "satmasivo" / p.name
+    if p.exists() and p.is_dir():
+        p = p / "reporte.xlsx"
+    if p.suffix.lower() != ".xlsx":
+        p = p.with_suffix(".xlsx")
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        probe = p.parent / ".satmasivo-w"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return p
+    except OSError:
+        fallback = Path.home() / "satmasivo" / p.name
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+
 def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = None) -> Path:
     del rfc_firma
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = resolve_xlsx_dest(path)
     wb = Workbook()
     ws = wb.active
     assert ws is not None

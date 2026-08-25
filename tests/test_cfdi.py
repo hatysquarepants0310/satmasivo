@@ -103,3 +103,13 @@ def test_excel_estado_egreso_y_69b(tmp_path):
     assert wb["Resumen"]["AJ2"].value == "No listado"
     assert wb["Resumen"]["O2"].value == row.uuid.upper()
 
+
+def test_export_excel_otra_ruta(tmp_path):
+    dest = tmp_path / "otra" / "carpeta" / "junio"
+    rows = scan_folder(FIXTURES)
+    out = export_excel(rows, dest)
+    assert out.is_file()
+    assert out.suffix == ".xlsx"
+    assert out.parent == dest.parent
+
+
