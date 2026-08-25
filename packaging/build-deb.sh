@@ -46,10 +46,7 @@ cat > "$PKG/usr/bin/satmasivo" <<'EOF'
 #!/usr/bin/python3
 import os
 import sys
-os.environ.setdefault(
-    "G_TLS_GNUTLS_PRIORITY",
-    "NORMAL:-DHE-RSA:-DHE-DSS:%COMPAT:%PROFILE_VERY_WEAK",
-)
+os.environ["G_TLS_GNUTLS_PRIORITY"] = "NORMAL:%COMPAT:%PROFILE_VERY_WEAK"
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 sys.path.insert(0, "/usr/lib/satmasivo")
 from satmasivo.__main__ import main

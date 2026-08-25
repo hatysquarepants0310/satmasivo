@@ -8,6 +8,7 @@ import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import gi
 
@@ -23,6 +24,7 @@ from satmasivo.fiel import load_fiel
 from satmasivo.pdf import cfdi_to_pdf
 from satmasivo.portal import CONSULTA, PORTAL, descargar_con_sesion
 from satmasivo.sat_ws import SatError, SatMasiva, extraer_zip
+from satmasivo.tlsenv import is_sat_host
 from satmasivo.update import check_latest, download_deb, install_deb, save_token
 from satmasivo.validar import validar_rows
 
@@ -94,6 +96,7 @@ class SatMasivoWindow(Gtk.Window):
         self.set_default_size(1180, 760)
         self.sentido = "recibidas"
         self._busy = False
+        self._tls_retried: set[str] = set()
         self._download_dir = Path.home() / "satmasivo"
         self._download_dir.mkdir(exist_ok=True)
 
@@ -141,15 +144,25 @@ class SatMasivoWindow(Gtk.Window):
         hint.set_xalign(0)
         bar.pack_end(hint, True, True, 8)
 
-        self.webview = WebKit2.WebView()
+        ctx = WebKit2.WebContext.get_default()
+        try:
+            ctx.set_tls_errors_policy(WebKit2.TLSErrorsPolicy.IGNORE)
+        except Exception:
+            pass
+        self.webview = WebKit2.WebView.new_with_context(ctx)
         settings = self.webview.get_settings()
         settings.set_enable_javascript(True)
         settings.set_user_agent(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
+        if hasattr(settings, "set_hardware_acceleration_policy"):
+            settings.set_hardware_acceleration_policy(
+                WebKit2.HardwareAccelerationPolicy.NEVER
+            )
         self.webview.connect("notify::uri", self._on_uri)
-        ctx = self.webview.get_context()
+        self.webview.connect("load-failed", self._on_load_failed)
+        self.webview.connect("load-failed-with-tls-errors", self._on_tls_failed)
         ctx.connect("download-started", self._on_download)
         scroll = Gtk.ScrolledWindow()
         scroll.add(self.webview)
@@ -182,6 +195,47 @@ class SatMasivoWindow(Gtk.Window):
 
     def _on_uri(self, *_args) -> None:
         self._set_status(self.webview.get_uri() or "")
+
+    def _on_tls_failed(self, view, uri, certificate, errors) -> bool:
+        host = urlparse(uri or "").hostname or ""
+        if not is_sat_host(host):
+            self._show_sat_error(uri, "Certificado TLS inaceptable (no es SAT).")
+            return True
+        ctx = view.get_context()
+        try:
+            ctx.allow_tls_certificate_for_host(certificate, host)
+        except Exception:
+            pass
+        if host in self._tls_retried:
+            self._show_sat_error(uri, "El SAT rechazó el TLS aun después de aceptar su certificado.")
+            return True
+        self._tls_retried.add(host)
+        GLib.idle_add(view.load_uri, uri)
+        return True
+
+    def _on_load_failed(self, _view, _event, uri, error) -> bool:
+        msg = ""
+        if error is not None:
+            msg = getattr(error, "message", None) or str(error)
+        if uri in self._tls_retried and "tls" in msg.lower():
+            return True
+        self._show_sat_error(uri, msg or "No se pudo cargar la página.")
+        return True
+
+    def _show_sat_error(self, uri: str, detalle: str) -> None:
+        safe = (detalle or "").replace("<", "&lt;")
+        dest = uri or SAT_LOGIN
+        html = f"""<!doctype html><meta charset="utf-8">
+<style>
+ body{{font-family:sans-serif;margin:48px;color:#0b3d61}}
+ a{{display:inline-block;margin-top:16px;padding:10px 16px;background:#0078D4;color:#fff;text-decoration:none;border-radius:6px}}
+</style>
+<h2>No se pudo abrir el SAT</h2>
+<p>{safe}</p>
+<p>Pulsa Home o reintenta. El SAT usa un TLS viejo; esta versión ya lo acepta.</p>
+<p><a href="{dest}">Reintentar</a></p>"""
+        self.webview.load_html(html, dest)
+        self._set_status(f"Error SAT: {detalle}")
 
     def _set_status(self, text: str) -> None:
         self.status.set_text(text)

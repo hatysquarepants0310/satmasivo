@@ -12,7 +12,7 @@ Cliente Ubuntu de descarga masiva de CFDI.
 ## Instalar
 
 ```bash
-sudo apt install ./satmasivo_1.1.1_all.deb
+sudo apt install ./satmasivo_1.2.0_all.deb
 satmasivo
 ```
 

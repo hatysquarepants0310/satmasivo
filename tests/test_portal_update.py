@@ -1,5 +1,5 @@
 from satmasivo.portal import extract_download_targets, looks_like_xml, logged_in
-from satmasivo.tlsenv import OPENSSL_CIPHERS, apply
+from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
 
@@ -39,7 +39,11 @@ def test_tls_apply_sets_gnutls(monkeypatch):
     monkeypatch.delenv("G_TLS_GNUTLS_PRIORITY", raising=False)
     apply()
     assert "PROFILE_VERY_WEAK" in __import__("os").environ["G_TLS_GNUTLS_PRIORITY"]
+    assert "-DHE-RSA" not in __import__("os").environ["G_TLS_GNUTLS_PRIORITY"]
     assert "SECLEVEL=1" in OPENSSL_CIPHERS
+    assert is_sat_host("cfdiau.sat.gob.mx")
+    assert is_sat_host("portalcfdi.facturaelectronica.sat.gob.mx")
+    assert not is_sat_host("evil.example")
 
 
 def test_sat_login_tls():

@@ -1,6 +1,7 @@
-"""TLS del SAT: cfdiau ofrece DHE-1024 y GnuTLS/OpenSSL 3 lo rechazan.
+"""TLS del SAT: cfdiau ofrece DHE-1024 y la cadena a veces no cierra.
 
-Hay que aplicar esto ANTES de importar gi / glib-networking.
+Aplicar ANTES de importar gi / glib-networking.
+No uses setdefault: un launcher viejo dejaría la prioridad mala.
 """
 
 from __future__ import annotations
@@ -8,13 +9,13 @@ from __future__ import annotations
 import os
 import ssl
 
-# Prefer ECDHE (el SAT sí lo tiene). Si cae a DHE-1024, bajar el piso.
-GNUTLS_PRIORITY = "NORMAL:-DHE-RSA:-DHE-DSS:%COMPAT:%PROFILE_VERY_WEAK"
+# Aceptar DHE-1024 y perfiles débiles. El SAT no ofrece otra cosa en cfdiau.
+GNUTLS_PRIORITY = "NORMAL:%COMPAT:%PROFILE_VERY_WEAK"
 OPENSSL_CIPHERS = "DEFAULT:@SECLEVEL=1"
 
 
 def apply() -> None:
-    os.environ.setdefault("G_TLS_GNUTLS_PRIORITY", GNUTLS_PRIORITY)
+    os.environ["G_TLS_GNUTLS_PRIORITY"] = GNUTLS_PRIORITY
     os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
 
@@ -23,3 +24,8 @@ def openssl_context() -> ssl.SSLContext:
     ctx.set_ciphers(OPENSSL_CIPHERS)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     return ctx
+
+
+def is_sat_host(host: str) -> bool:
+    host = (host or "").lower().rstrip(".")
+    return host == "sat.gob.mx" or host.endswith(".sat.gob.mx")
