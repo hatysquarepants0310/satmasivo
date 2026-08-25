@@ -18,6 +18,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk, Pango
 from satmasivo import __version__
 from satmasivo.cfdi import scan_folder
 from satmasivo.ciec_login import CiecClient
+from satmasivo.config import load_config, save_config
 from satmasivo.excel import export_excel
 from satmasivo.fiel import load_fiel
 from satmasivo.pdf import cfdi_to_pdf
@@ -101,6 +102,8 @@ class SatMasivoWindow(Gtk.Window):
         self._busy = False
         self._download_dir = Path.home() / "satmasivo"
         self._download_dir.mkdir(exist_ok=True)
+        prev = str(load_config().get("last_lote") or "")
+        self._last_lote = Path(prev) if prev else None
         self.ciec = CiecClient()
         self._logged_rfc = ""
 
@@ -377,15 +380,12 @@ class SatMasivoWindow(Gtk.Window):
         self._run_bg("Generando reporte…", lambda: self._job_reporte(folder, dest, validar))
 
     def on_reporte_actual(self, *_a) -> None:
-        default = str(self._download_dir)
-        if any(Path(default).rglob("*.xml")):
-            dest = self._pick_save("Guardar Excel", "reporte-cfdi.xlsx")
-            if not dest:
-                return
-            validar = self._ask_yes_no("¿Consultar vigencia en el SAT de cada UUID?")
-            self._run_bg("Generando reporte…", lambda: self._job_reporte(default, dest, validar))
+        lote = self._last_lote
+        if lote is None or not lote.is_dir() or not any(lote.rglob("*.xml")):
+            self._error("No hay un lote. Primero Descargar. Para otra carpeta usa «Reporte CFDi de una carpeta».")
             return
-        self.on_reporte_carpeta()
+        dest = lote / "reporte.xlsx"
+        self._run_bg("Generando reporte del último lote…", lambda: self._job_reporte(str(lote), str(dest), True))
 
     def on_xml_pdf(self, *_a) -> None:
         xml = self._pick_file("CFDI XML", [("XML", "*.xml")])
@@ -565,7 +565,7 @@ class SatMasivoWindow(Gtk.Window):
             raise SatError(f"No hay XML de CFDI en {folder}")
         if validar:
             rows = validar_rows(rows)
-        export_excel(rows, dest)
+        export_excel(rows, dest, rfc_firma=self._logged_rfc or None)
         return f"{len(rows)} comprobantes → {dest}"
 
     def _job_descarga_fiel(self, args: dict) -> str:
@@ -609,7 +609,14 @@ class SatMasivoWindow(Gtk.Window):
         files = descargar_con_sesion(cookies, sentido=args["sentido"], dest=dest)
         return self._finish_rows(dest, args["validar"], self._logged_rfc, extra=f"{len(files)} XML por sesión SAT\n")
 
+    def _remember_lote(self, dest: Path) -> None:
+        self._last_lote = dest
+        cfg = load_config()
+        cfg["last_lote"] = str(dest)
+        save_config(cfg)
+
     def _finish_rows(self, dest: Path, validar: bool, rfc: str | None, extra: str = "") -> str:
+        self._remember_lote(dest)
         rows = scan_folder(dest)
         if validar and rows:
             rows = validar_rows(rows)
