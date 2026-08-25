@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 
+import requests
+from requests.cookies import RequestsCookieJar
+
 from satmasivo.http import sat_session
 from satmasivo.sat_ws import SatError
 
@@ -130,6 +133,17 @@ class CiecClient:
     def _new_sess(self) -> None:
         self.sess = sat_session(insecure=True)
 
+    def _fresh_socket(self) -> None:
+        """Misma cookies, TCP nuevo. El keep-alive del SAT se queda muerto y el POST cuelga 40s."""
+        jar = RequestsCookieJar()
+        jar.update(self.sess.cookies)
+        try:
+            self.sess.close()
+        except Exception:
+            pass
+        self.sess = sat_session(insecure=True)
+        self.sess.cookies.update(jar)
+
     def start(self) -> bytes:
         with self._lock:
             self._new_sess()
@@ -186,12 +200,19 @@ class CiecClient:
                 "Ecom_Password": password,
                 "userCaptcha": captcha.strip(),
             }
-            r = self.sess.post(
-                self._auth_url or AUTH_CIEC,
-                data=payload,
-                timeout=TIMEOUT,
-                allow_redirects=True,
-            )
+            self._fresh_socket()
+            try:
+                r = self.sess.post(
+                    self._auth_url or AUTH_CIEC,
+                    data=payload,
+                    timeout=TIMEOUT,
+                    allow_redirects=True,
+                )
+            except requests.RequestException as exc:
+                raise SatError(
+                    "No hubo respuesta del login (conexión vieja o SAT callado). "
+                    "Pulsa Otro captcha y Enviar otra vez."
+                ) from exc
             html, url = r.text, r.url
             if looks_like_login(html):
                 self._reject_login(html, "RFC, contraseña o captcha incorrectos.")

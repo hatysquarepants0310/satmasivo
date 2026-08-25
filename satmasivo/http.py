@@ -52,6 +52,7 @@ def sat_session(*, insecure: bool = False) -> requests.Session:
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+            "Connection": "close",
         }
     )
     return s
