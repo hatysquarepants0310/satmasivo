@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import threading
+import uuid as uuidlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -30,6 +33,7 @@ AJAX_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
     "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
 }
+XML_WORKERS = 10
 
 
 class _FormParser(HTMLParser):
@@ -283,6 +287,29 @@ class _LinkParser(HTMLParser):
             self.hrefs.append(href)
 
 
+def clone_session(sess: requests.Session) -> requests.Session:
+    s = sat_session(insecure=True)
+    s.headers.update({"User-Agent": UA, "Referer": PORTAL})
+    for c in sess.cookies:
+        if c.value is None:
+            continue
+        s.cookies.set(c.name, c.value, domain=c.domain or ".sat.gob.mx", path=c.path or "/")
+    return s
+
+
+def plan_xml_jobs(hrefs: list[str], uuids: list[str]) -> list[tuple[str, str]]:
+    pending = {u.upper() for u in uuids}
+    jobs: list[tuple[str, str]] = []
+    for href in hrefs:
+        jobs.append(("href", href))
+        found = UUID_RE.search(href)
+        if found:
+            pending.discard(found.group(0).upper())
+    for u in pending:
+        jobs.append(("uuid", u))
+    return jobs
+
+
 def session_from_cookies(cookies: list[tuple[str, str, str, str]]) -> requests.Session:
     s = sat_session(insecure=True)
     s.headers.update({"User-Agent": UA, "Referer": PORTAL})
@@ -332,9 +359,7 @@ def download_url(sess: requests.Session, url: str, dest_dir: Path) -> Path | Non
     found = UUID_RE.search(r.content.decode("utf-8", errors="ignore"))
     name = found.group(0).upper() + ".xml" if found else ""
     if not name:
-        name = Path(url.split("?")[0]).name
-        if not name.lower().endswith(".xml"):
-            name = f"cfdi-{len(list(dest_dir.glob('*.xml'))) + 1}.xml"
+        name = f"cfdi-{uuidlib.uuid4().hex[:12]}.xml"
     path = dest_dir / name
     path.write_bytes(r.content)
     return path
@@ -458,44 +483,46 @@ def descargar_con_sesion(
         hrefs.extend(extra_hrefs)
     uuids = list(dict.fromkeys(uuids))
     hrefs = list(dict.fromkeys(hrefs))
-
+    jobs = plan_xml_jobs(hrefs, uuids)
+    total_jobs = max(len(jobs), 1)
     written: list[Path] = []
     have: set[str] = set()
-    jobs = list(hrefs) + [f"uuid:{u}" for u in uuids]
-    total_jobs = max(len(jobs), 1)
+    lock = threading.Lock()
     done = 0
-    for href in hrefs:
-        done += 1
-        got = download_url(sess, href, dest)
-        uid = got.stem.upper() if got else ""
-        if got:
-            written.append(got)
-            have.add(uid)
-        note(
-            phase="xml",
-            done=done,
-            total=total_jobs,
-            uuid=uid,
-            ok=bool(got),
-            msg=f"XML {done}/{total_jobs}" + (f"  {uid}" if uid else ""),
-        )
-    for uuid in uuids:
-        done += 1
-        if uuid.upper() in have:
-            note(phase="xml", done=done, total=total_jobs, uuid=uuid, ok=True, msg=f"Ya estaba {uuid}")
-            continue
-        got = recover_by_uuid(sess, uuid, dest)
-        if got:
-            written.append(got)
-            have.add(uuid.upper())
-        note(
-            phase="xml",
-            done=done,
-            total=total_jobs,
-            uuid=uuid,
-            ok=bool(got),
-            msg=f"XML {done}/{total_jobs}  {uuid}",
-        )
+
+    def one(job: tuple[str, str]) -> Path | None:
+        kind, payload = job
+        worker = clone_session(sess)
+        try:
+            if kind == "href":
+                return download_url(worker, payload, dest)
+            return recover_by_uuid(worker, payload, dest)
+        except Exception:
+            return None
+        finally:
+            worker.close()
+
+    workers = min(XML_WORKERS, total_jobs)
+    note(phase="xml", done=0, total=total_jobs, msg=f"Bajando {len(jobs)} XML × {workers} hilos")
+    if jobs:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(one, job): job for job in jobs}
+            for fut in as_completed(futures):
+                got = fut.result()
+                with lock:
+                    done += 1
+                    uid = got.stem.upper() if got else ""
+                    if got:
+                        written.append(got)
+                        have.add(uid)
+                    note(
+                        phase="xml",
+                        done=done,
+                        total=total_jobs,
+                        uuid=uid,
+                        ok=bool(got),
+                        msg=f"XML {done}/{total_jobs}" + (f"  {uid}" if uid else ""),
+                    )
     if not written:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(

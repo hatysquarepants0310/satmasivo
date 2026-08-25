@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
-from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, query_filters
+from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -139,6 +139,15 @@ def test_descarga_acepta_progress():
     import inspect
 
     assert "progress" in inspect.signature(descargar_con_sesion).parameters
+
+
+def test_plan_xml_jobs_skips_uuid_already_in_href():
+    href = "https://portalcfdi.facturaelectronica.sat.gob.mx/RecuperaCfdi.aspx?folioFiscal=11111111-2222-3333-4444-555555555555"
+    jobs = plan_xml_jobs([href], ["11111111-2222-3333-4444-555555555555", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
+    kinds = [k for k, _ in jobs]
+    assert kinds.count("href") == 1
+    assert ("uuid", "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE") in jobs
+    assert not any(p.endswith("555555555555") and k == "uuid" for k, p in jobs)
 
 
 
