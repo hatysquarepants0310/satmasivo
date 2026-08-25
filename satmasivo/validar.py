@@ -78,6 +78,7 @@ def consultar_estatus(row: CfdiRow, timeout: float = 25.0) -> CfdiRow:
         row.estatus_sat = ""
         return row
     row.estatus_sat = data.get("Estado") or ""
+    row.codigo_estatus = data.get("CodigoEstatus") or ""
     row.cancelable = data.get("EsCancelable") or ""
     row.estatus_cancelacion = data.get("EstatusCancelacion") or ""
     return row

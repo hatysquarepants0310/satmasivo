@@ -173,6 +173,7 @@ class CfdiRow:
     complemento_pago: str = "No"
     version: str = ""
     estatus_sat: str = ""
+    codigo_estatus: str = ""
     cancelable: str = ""
     estatus_cancelacion: str = ""
     rec_dom_fiscal: str = ""

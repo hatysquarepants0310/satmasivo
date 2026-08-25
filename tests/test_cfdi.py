@@ -79,3 +79,27 @@ def test_expresion_impresa_y_soap():
     data = parse_consulta_xml(soap)
     assert data["Estado"] == "Vigente"
     assert data["EsCancelable"].startswith("Cancelable")
+
+
+def test_excel_estado_egreso_y_69b(tmp_path):
+    from openpyxl import load_workbook
+
+    from satmasivo.excel import _estado
+
+    row = parse_cfdi(FIXTURES / "cfdi_ingreso.xml")
+    row.estatus_sat = "Vigente"
+    row.codigo_estatus = "S - Comprobante obtenido satisfactoriamente."
+    est = _estado(row)
+    assert "Comprobante obtenido satisfactoriamente" in est
+    assert est.endswith("/Estado:Vigente")
+    row.tipo_comprobante = "E"
+    dest = tmp_path / "e.xlsx"
+    export_excel([row], dest)
+    wb = load_workbook(dest)
+    assert wb.sheetnames == ["Resumen", "Egresos"]
+    headers = [c.value for c in wb["Resumen"][1]]
+    total_col = headers.index("TOTAL") + 1
+    assert wb["Resumen"].cell(2, total_col).value == -1160
+    assert wb["Resumen"]["AJ2"].value == "No listado"
+    assert wb["Resumen"]["O2"].value == row.uuid.upper()
+

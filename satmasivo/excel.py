@@ -170,9 +170,23 @@ def _estado(row: CfdiRow) -> str:
     est = (row.estatus_sat or "").strip()
     if not est:
         return ""
+    cod = (row.codigo_estatus or "").strip()
+    if " - " in cod:
+        cod = cod.split(" - ", 1)[1].strip()
+    if cod.lower().startswith("comprobante") or "satisfactoriamente" in cod.lower():
+        return f" {cod}/Estado:{est}"
     if est.lower().startswith("comprobante"):
         return est
     return f"Estado:{est}"
+
+
+def _money_tipo(row: CfdiRow, value):
+    n = _money(value)
+    if n is None:
+        return None
+    if row.tipo_comprobante == "E" and isinstance(n, (int, float)) and n > 0:
+        return -n
+    return n
 
 
 def _write_header(ws: Worksheet, titles: list[str]) -> None:
@@ -211,38 +225,38 @@ def _resumen_row(n: int, row: CfdiRow) -> list:
         regimen_label(row.regimen_fiscal),
         row.serie,
         row.folio,
-        row.uuid,
+        (row.uuid or "").upper(),
         row.metodo_pago,
         row.num_cta_pago,
         row.forma_pago,
         row.moneda,
         row.tipo_cambio or None,
-        _money(row.subtotal),
-        _money(row.impuestos_trasladados) if row.impuestos_trasladados else None,
-        _money(row.iva_trasladado),
-        _money(row.ieps_trasladado),
-        _money(row.impuestos_retenidos) if row.impuestos_retenidos else None,
-        _money(row.iva_retenido),
-        _money(row.isr_retenido),
+        _money_tipo(row, row.subtotal),
+        _money_tipo(row, row.impuestos_trasladados) if row.impuestos_trasladados else None,
+        _money_tipo(row, row.iva_trasladado),
+        _money_tipo(row, row.ieps_trasladado),
+        _money_tipo(row, row.impuestos_retenidos) if row.impuestos_retenidos else None,
+        _money_tipo(row, row.iva_retenido),
+        _money_tipo(row, row.isr_retenido),
         _money(row.descuento) if row.descuento else None,
-        _money(row.total),
+        _money_tipo(row, row.total),
         _money(row.imp_local_ret),
         _money(row.imp_local_tras),
         row.imp_local_det_ret or None,
         row.imp_local_det_tras or None,
         row.primer_concepto,
         _estado(row),
-        None,
-        None,
-        None,
-        None,
+        "No listado",
+        "No listado",
+        "No listado",
+        "No listado",
     ]
 
 
 def _ingresos_cfdi_prefix(row: CfdiRow) -> list:
     return [
         row.version,
-        row.uuid,
+        (row.uuid or "").upper(),
         row.serie,
         row.folio,
         format_fecha_masiva(row.fecha),
@@ -317,12 +331,12 @@ def _write_resumen(ws: Worksheet, rows: list[CfdiRow]) -> None:
     ws.column_dimensions["AH"].width = 36
 
 
-def _write_ingresos(ws: Worksheet, rows: list[CfdiRow]) -> None:
+def _write_conceptos(ws: Worksheet, rows: list[CfdiRow], tipos: set[str]) -> None:
     _write_header(ws, INGRESOS_COLS)
     r = 2
     money = set(range(8, 13)) | set(range(35, 52))
     for row in sorted(rows, key=lambda x: (x.fecha, x.uuid)):
-        if row.tipo_comprobante == "P":
+        if row.tipo_comprobante not in tipos:
             continue
         prefix = _ingresos_cfdi_prefix(row)
         conceptos = row.conceptos or [None]
@@ -339,6 +353,14 @@ def _write_ingresos(ws: Worksheet, rows: list[CfdiRow]) -> None:
     ws.column_dimensions["AH"].width = 36
 
 
+def _write_ingresos(ws: Worksheet, rows: list[CfdiRow]) -> None:
+    _write_conceptos(ws, rows, {"I", "N", "T"})
+
+
+def _write_egresos(ws: Worksheet, rows: list[CfdiRow]) -> None:
+    _write_conceptos(ws, rows, {"E"})
+
+
 def _write_pagos(ws: Worksheet, rows: list[CfdiRow]) -> None:
     _write_header(ws, PAGOS_COLS)
     r = 2
@@ -352,7 +374,7 @@ def _write_pagos(ws: Worksheet, rows: list[CfdiRow]) -> None:
                 ws,
                 r,
                 [
-                    row.uuid,
+                    (row.uuid or "").upper(),
                     row.folio,
                     row.serie,
                     format_fecha_masiva(row.fecha),
@@ -394,7 +416,12 @@ def export_excel(rows: list[CfdiRow], path: str | Path, rfc_firma: str | None = 
     assert ws is not None
     ws.title = "Resumen"
     _write_resumen(ws, rows)
-    _write_ingresos(wb.create_sheet("Ingresos"), rows)
-    _write_pagos(wb.create_sheet("Pagos"), rows)
+    tipos = {r.tipo_comprobante for r in rows}
+    if tipos & {"I", "N", "T"} or not tipos:
+        _write_ingresos(wb.create_sheet("Ingresos"), rows)
+    if "E" in tipos:
+        _write_egresos(wb.create_sheet("Egresos"), rows)
+    if "P" in tipos or any(r.pagos for r in rows):
+        _write_pagos(wb.create_sheet("Pagos"), rows)
     wb.save(path)
     return path
