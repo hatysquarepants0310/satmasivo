@@ -37,6 +37,7 @@ def looks_like_login(html: str) -> bool:
 class _FormParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
+        self.forms: list[tuple[str, str, dict[str, str]]] = []
         self.action = ""
         self.method = "get"
         self.fields: dict[str, str] = {}
@@ -44,10 +45,13 @@ class _FormParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         ad = {k.lower(): (v or "") for k, v in attrs}
-        if tag.lower() == "form" and not self._in_form:
+        if tag.lower() == "form":
+            if self._in_form:
+                self.forms.append((self.action, self.method, dict(self.fields)))
             self._in_form = True
             self.action = ad.get("action", "")
             self.method = (ad.get("method") or "get").lower()
+            self.fields = {}
             return
         if not self._in_form or tag.lower() != "input":
             return
@@ -57,16 +61,24 @@ class _FormParser(HTMLParser):
         self.fields[name] = ad.get("value", "")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "form":
+        if tag.lower() == "form" and self._in_form:
+            self.forms.append((self.action, self.method, dict(self.fields)))
+            self._in_form = False
+
+    def finish(self) -> None:
+        if self._in_form:
+            self.forms.append((self.action, self.method, dict(self.fields)))
             self._in_form = False
 
 
 def parse_auto_form(html: str) -> tuple[str, str, dict[str, str]] | None:
     p = _FormParser()
     p.feed(html or "")
-    names = {n.lower() for n in p.fields}
-    if "wresult" in names or "wa" in names or "samlresponse" in names:
-        return p.action, p.method, p.fields
+    p.finish()
+    for action, method, fields in p.forms:
+        names = {n.lower() for n in fields}
+        if "wresult" in names or "wa" in names or "samlresponse" in names:
+            return action, method, fields
     return None
 
 
@@ -93,10 +105,9 @@ class CiecClient:
         self.sess = sat_session(insecure=True)
 
     def start(self) -> bytes:
-        self.sess.get(PORTAL, timeout=40, allow_redirects=True)
-        r = self.sess.post(LOGIN_POST, data={}, timeout=40, allow_redirects=True)
+        r = self.sess.get(PORTAL, timeout=18, allow_redirects=True)
         if not looks_like_login(r.text):
-            r = self.sess.get(LOGIN_POST, timeout=40, allow_redirects=True)
+            r = self.sess.get(LOGIN_POST, timeout=18, allow_redirects=True)
         if not looks_like_login(r.text):
             raise SatError(
                 f"El SAT no entregó el login ({r.status_code}, {len(r.content)} bytes)."
@@ -105,7 +116,7 @@ class CiecClient:
         return self.captcha
 
     def _follow_wsfed(self, html: str, current_url: str) -> None:
-        for _ in range(6):
+        for _ in range(3):
             parsed = parse_auto_form(html)
             if not parsed:
                 break
@@ -114,14 +125,14 @@ class CiecClient:
                 break
             url = urljoin(current_url, action)
             if method == "get":
-                r = self.sess.get(url, params=fields, timeout=40, allow_redirects=True)
+                r = self.sess.get(url, params=fields, timeout=18, allow_redirects=True)
             else:
-                r = self.sess.post(url, data=fields, timeout=40, allow_redirects=True)
+                r = self.sess.post(url, data=fields, timeout=18, allow_redirects=True)
             html = r.text
             current_url = r.url
             if logged_in_portal(html, current_url):
                 return
-        r = self.sess.get(PORTAL, timeout=40, allow_redirects=True)
+        r = self.sess.get(PORTAL, timeout=18, allow_redirects=True)
         if not logged_in_portal(r.text, r.url):
             if looks_like_login(r.text):
                 try:
@@ -144,7 +155,7 @@ class CiecClient:
                 "Ecom_Password": password,
                 "userCaptcha": captcha.strip(),
             },
-            timeout=40,
+            timeout=18,
             allow_redirects=True,
         )
         if looks_like_login(r.text):

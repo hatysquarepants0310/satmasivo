@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "satmasivo"
-version = "1.5.1"
+version = "1.5.2"
 description = "Descarga masiva de CFDI del SAT para Ubuntu"
 readme = "README.md"
 requires-python = ">=3.11"

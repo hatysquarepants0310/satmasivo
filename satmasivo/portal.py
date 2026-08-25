@@ -21,7 +21,7 @@ CONSULTA = {
 UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
-ACCION_RE = re.compile(r"AccionCfdi\('([^']+)'", re.I)
+ACCION_RE = re.compile(r"AccionCfdi\(['\"]([^'\"]+)['\"]", re.I)
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0"
 )
@@ -55,6 +55,8 @@ class _FormParser(HTMLParser):
                 return
             if typ in {"submit", "button", "image"}:
                 return
+            if name.startswith("ctl00$MainContent$Btn"):
+                return
             self.fields[name] = ad.get("value", "")
         if tag.lower() == "select":
             self._select = ad.get("name") or None
@@ -79,9 +81,19 @@ class _FormParser(HTMLParser):
 
 
 def parse_form(html: str) -> dict[str, str]:
+    html = (html or "").replace("charset=utf-16", "charset=utf-8")
     p = _FormParser()
-    p.feed(html or "")
+    p.feed(html)
     return p.fields
+
+
+def html_from_delta(source: str) -> str:
+    """El SAT manda la tabla dentro de un updatePanel |pipe|."""
+    raw = source or ""
+    if "AccionCfdi" in raw or "tblResult" in raw:
+        chunks = [p for p in raw.split("|") if "AccionCfdi" in p or "tblResult" in p or "<table" in p.lower()]
+        return "\n".join(chunks) if chunks else raw
+    return raw
 
 
 def parse_sat_delta(source: str) -> dict[str, str]:
@@ -181,7 +193,6 @@ def _select_fechas(sess: requests.Session, url: str, fields: dict[str, str]) -> 
             "__EVENTTARGET": "ctl00$MainContent$RdoFechas",
             "__LASTFOCUS": "",
             "ctl00$MainContent$FiltroCentral": "RdoFechas",
-            "ctl00$MainContent$RdoFechas": "RdoFechas",
             "ctl00$ScriptManager1": "ctl00$MainContent$UpnlBusqueda|ctl00$MainContent$RdoFechas",
         }
     )
@@ -275,6 +286,7 @@ def recover_by_uuid(sess: requests.Session, uuid: str, dest_dir: Path) -> Path |
     candidates = [
         urljoin(PORTAL, f"RecuperaCfdi.aspx?folioFiscal={uuid}"),
         urljoin(PORTAL, f"RecuperaCfdi.aspx?uuid={uuid}"),
+        urljoin(PORTAL, f"Recuperacion/Recuperacion.aspx?folioFiscal={uuid}"),
         urljoin(PORTAL, f"RepresentacionImpresa.aspx?folioFiscal={uuid}"),
     ]
     for url in candidates:
@@ -296,7 +308,7 @@ def probe_session(sess: requests.Session, sentido: str) -> str:
 
 
 def _collect(html: str) -> tuple[list[str], list[str]]:
-    return extract_download_targets(html)
+    return extract_download_targets(html_from_delta(html))
 
 
 def descargar_con_sesion(
@@ -315,7 +327,7 @@ def descargar_con_sesion(
         if not cookies:
             raise SatError("La ventana no entregó cookies del SAT. Recarga e inicia sesión.")
         sess = session_from_cookies(cookies)
-    html0 = probe_session(sess, sentido)
+    html0 = probe_session(sess, sentido).replace("charset=utf-16", "charset=utf-8")
     url = CONSULTA.get(sentido, CONSULTA["recibidas"])
     fields = parse_form(html0)
     if fields:
@@ -324,18 +336,15 @@ def descargar_con_sesion(
     uuids: list[str] = []
     hrefs: list[str] = []
     days = _days(fecha_ini, fecha_fin)
-    if sentido == "emitidas":
-        html = _buscar_html(sess, url, fields, date_filters("emitidas", days[0], days[-1]))
+    for day in days:
+        extra = date_filters(sentido, day, day if sentido == "recibidas" else days[-1])
+        html = _buscar_html(sess, url, fields, extra)
+        fields.update(parse_sat_delta(html))
         u, h = _collect(html)
         uuids.extend(u)
         hrefs.extend(h)
-    else:
-        for day in days:
-            html = _buscar_html(sess, url, fields, date_filters("recibidas", day))
-            fields.update(parse_sat_delta(html))
-            u, h = _collect(html)
-            uuids.extend(u)
-            hrefs.extend(h)
+        if sentido == "emitidas":
+            break
 
     if extra_html:
         u2, h2 = extract_download_targets(extra_html)
@@ -360,8 +369,27 @@ def descargar_con_sesion(
             written.append(got)
             have.add(uuid.upper())
     if not written:
-        raise SatError(
-            "Sesión SAT viva, pero el portal no soltó XML en ese periodo. "
-            "Prueba otro rango de fechas o usa e.firma."
-        )
+        if sentido == "emitidas" and len(days) > 1:
+            for day in days:
+                html = _buscar_html(sess, url, fields, date_filters("emitidas", day, day))
+                fields.update(parse_sat_delta(html))
+                u, h = _collect(html)
+                for href in h:
+                    got = download_url(sess, href, dest)
+                    if got:
+                        written.append(got)
+                have = {p.stem.upper() for p in written}
+                for uuid in u:
+                    if uuid.upper() in have:
+                        continue
+                    got = recover_by_uuid(sess, uuid, dest)
+                    if got:
+                        written.append(got)
+                        have.add(uuid.upper())
+        if not written:
+            raise SatError(
+                f"Sesión SAT viva, pero el portal no soltó XML "
+                f"({len(uuids)} UUID, {len(hrefs)} ligas). "
+                "Prueba un rango más corto o e.firma."
+            )
     return written

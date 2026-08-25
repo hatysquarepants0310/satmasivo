@@ -1,5 +1,5 @@
 from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form
-from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, looks_like_xml, logged_in, parse_sat_delta
+from satmasivo.portal import date_filters, extract_accion_urls, extract_download_targets, html_from_delta, looks_like_xml, logged_in, parse_sat_delta
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
 
@@ -90,6 +90,22 @@ def test_parse_wsfed_form():
     assert fields["wa"] == "wsignin1.0"
     assert "wresult" in fields
     assert parse_auto_form("<html><form><input name=x></form></html>") is None
+    two = """
+    <form action="/x"><input name="q" value="1"></form>
+    <form action="https://portalcfdi.facturaelectronica.sat.gob.mx/" method="POST">
+    <input type="hidden" name="wresult" value="tok">
+    </form>
+    """
+    parsed2 = parse_auto_form(two)
+    assert parsed2 is not None
+    assert parsed2[2]["wresult"] == "tok"
+
+
+def test_html_from_delta():
+    raw = "|1|#||4|80|updatePanel|ctl00_Upnl|<table id='ctl00_MainContent_tblResult'><span onclick=\"return AccionCfdi('Recupera.aspx?Datos=z','Recuperacion');\"></span></table>|"
+    html = html_from_delta(raw)
+    assert "tblResult" in html
+    assert extract_accion_urls(html)
 
 
 def test_extract_captcha_and_live_start():
