@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 import requests
 
+from satmasivo.http import sat_session
 from satmasivo.sat_ws import SatError
 
 PORTAL = "https://portalcfdi.facturaelectronica.sat.gob.mx/"
@@ -39,7 +40,7 @@ class _LinkParser(HTMLParser):
 
 
 def session_from_cookies(cookies: list[tuple[str, str, str, str]]) -> requests.Session:
-    s = requests.Session()
+    s = sat_session()
     s.headers.update({"User-Agent": UA, "Referer": PORTAL})
     for name, value, domain, path in cookies:
         s.cookies.set(name, value, domain=domain or ".sat.gob.mx", path=path or "/")

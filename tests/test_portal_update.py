@@ -1,4 +1,5 @@
 from satmasivo.portal import extract_download_targets, looks_like_xml, logged_in
+from satmasivo.tlsenv import OPENSSL_CIPHERS, apply
 from satmasivo.update import is_newer, parse_version
 
 
@@ -29,5 +30,25 @@ def test_looks_like_xml():
 def test_version_newer():
     assert parse_version("v1.1.0") == (1, 1, 0)
     assert is_newer("1.1.0", "1.0.0")
+    assert is_newer("1.1.1", "1.1.0")
     assert not is_newer("1.0.0", "1.1.0")
     assert not is_newer("1.0.0", "1.0.0")
+
+
+def test_tls_apply_sets_gnutls(monkeypatch):
+    monkeypatch.delenv("G_TLS_GNUTLS_PRIORITY", raising=False)
+    apply()
+    assert "PROFILE_VERY_WEAK" in __import__("os").environ["G_TLS_GNUTLS_PRIORITY"]
+    assert "SECLEVEL=1" in OPENSSL_CIPHERS
+
+
+def test_sat_login_tls():
+    from satmasivo.http import sat_session
+
+    r = sat_session().get(
+        "https://cfdiau.sat.gob.mx/nidp/wsfed/ep?id=SATUPCFDiCon&sid=0&option=credential&sid=0",
+        timeout=25,
+        allow_redirects=True,
+    )
+    assert r.status_code == 200
+

@@ -1,31 +1,21 @@
 # SAT Masivo
 
-Cliente Ubuntu de descarga masiva de CFDI. Cada quien entra con **su** SAT.
+Cliente Ubuntu de descarga masiva de CFDI.
 
-Privado. Para la firma.
+## Uso
 
-## Qué hace
-
-- Barra: Recibidas / Emitidas / Descargar / Reporte / XML a PDF / Reporte de carpeta / Actualizar.
-- Login oficial del SAT embebido. El captcha lo resuelve el usuario. CIEC no se guarda.
-- **Descargar** en dos modos:
-  - Sesión SAT (RFC + contraseña de la ventana).
-  - e.firma (`.cer` + `.key`) por el Web Service oficial.
-- Excel: ingresos / egresos / pagos, IVA/IEPS/ISR, forma de pago, complemento de pago, vigencia.
-- **Actualizar** baja el `.deb` del release de GitHub e instala con `pkexec`. Repo privado: token o `gh auth login`.
+1. **Home** — login oficial del SAT (RFC + contraseña + captcha, o e.firma).
+2. **Recibidas / Emitidas** — ya con sesión.
+3. **Descargar** — sesión SAT de la ventana, o e.firma (WS).
+4. **Actualizar** — baja el `.deb` del release.
 
 ## Instalar
 
 ```bash
-sudo apt install ./satmasivo_1.1.0_all.deb
+sudo apt install ./satmasivo_1.1.1_all.deb
 satmasivo
 ```
 
-Si no abre, córrelo en terminal: el error sale ahí y en un diálogo.
+Si no abre, córrelo en terminal.
 
-## Uso
-
-1. Entra al SAT (RFC + contraseña + captcha, o e.firma).
-2. Recibidas o Emitidas.
-3. Descargar: elige sesión SAT o e.firma, fechas y carpeta.
-4. Actualizar cuando haya release nuevo.
+El SAT usa DH de 1024 bits. El launcher fuerza TLS compatible (GnuTLS + OpenSSL SECLEVEL=1).

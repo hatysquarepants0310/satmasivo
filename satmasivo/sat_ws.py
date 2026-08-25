@@ -12,6 +12,9 @@ import requests
 from lxml import etree
 
 from satmasivo.fiel import Fiel, c14n, sha1_b64
+from satmasivo.http import sat_session
+
+_HTTP = sat_session()
 
 NS_S = "http://schemas.xmlsoap.org/soap/envelope/"
 NS_U = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
@@ -74,7 +77,7 @@ def _post(url: str, action: str, body: bytes, token: str | None = None) -> etree
     }
     if token:
         headers["Authorization"] = f'WRAP access_token="{token}"'
-    r = requests.post(url, data=body, headers=headers, timeout=90)
+    r = _HTTP.post(url, data=body, headers=headers, timeout=90)
     if r.status_code >= 400:
         raise SatError(f"SAT HTTP {r.status_code}: {r.text[:400]}")
     return etree.fromstring(r.content)

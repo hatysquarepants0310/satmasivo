@@ -108,10 +108,13 @@ class SatMasivoWindow(Gtk.Window):
         root.pack_start(bar, False, False, 0)
 
         stack = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.btn_home = ToolButton("go-home", "Home")
         self.btn_rec = ToolButton("mail-inbox", "Recibidas")
         self.btn_emi = ToolButton("mail-send", "Emitidas")
+        self.btn_home.connect("clicked", lambda *_: self.go_home())
         self.btn_rec.connect("clicked", lambda *_: self.set_sentido("recibidas"))
         self.btn_emi.connect("clicked", lambda *_: self.set_sentido("emitidas"))
+        stack.pack_start(self.btn_home, False, False, 0)
         stack.pack_start(self.btn_rec, False, False, 0)
         stack.pack_start(self.btn_emi, False, False, 0)
         bar.pack_start(stack, False, False, 0)
@@ -130,8 +133,8 @@ class SatMasivoWindow(Gtk.Window):
             bar.pack_start(b, False, False, 0)
 
         hint = Gtk.Label(
-            label="Entra con tu RFC y contraseña SAT o e.firma.\n"
-            "El captcha lo resuelves tú. SAT Masivo hace el resto."
+            label="Home = login SAT. Entra (captcha tú).\n"
+            "Luego Recibidas o Emitidas. SAT Masivo hace el resto."
         )
         hint.set_justify(Gtk.Justification.LEFT)
         hint.get_style_context().add_class("hint")
@@ -157,15 +160,22 @@ class SatMasivoWindow(Gtk.Window):
         self.status.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
         root.pack_end(self.status, False, False, 0)
 
-        self.set_sentido("recibidas", navigate=False)
-        self.webview.load_uri(SAT_LOGIN)
+        self.go_home()
         GLib.timeout_add_seconds(8, self._silent_update_check)
+
+    def _mark(self, which: str) -> None:
+        for name in ("btn_home", "btn_rec", "btn_emi"):
+            getattr(self, name).get_style_context().remove_class("active")
+        getattr(self, which).get_style_context().add_class("active")
+
+    def go_home(self) -> None:
+        self._mark("btn_home")
+        self.webview.load_uri(SAT_LOGIN)
+        self._set_status("Login SAT")
 
     def set_sentido(self, sentido: str, navigate: bool = True) -> None:
         self.sentido = sentido
-        self.btn_rec.get_style_context().remove_class("active")
-        self.btn_emi.get_style_context().remove_class("active")
-        (self.btn_rec if sentido == "recibidas" else self.btn_emi).get_style_context().add_class("active")
+        self._mark("btn_rec" if sentido == "recibidas" else "btn_emi")
         if navigate:
             self.webview.load_uri(CONSULTA[sentido])
         self._set_status(f"Modo {sentido}. {self.webview.get_uri() or SAT_LOGIN}")

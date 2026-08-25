@@ -7,8 +7,10 @@ from urllib.parse import quote
 import requests
 
 from satmasivo.cfdi import CfdiRow
+from satmasivo.http import sat_session
 
 CONSULTA = "https://consultaqr.facturaelectronica.sat.gob.mx/ConsultaCFDIService.svc/json/Consulta"
+_HTTP = sat_session()
 
 
 def consultar_estatus(row: CfdiRow, timeout: float = 20.0) -> CfdiRow:
@@ -23,7 +25,7 @@ def consultar_estatus(row: CfdiRow, timeout: float = 20.0) -> CfdiRow:
         "id": row.uuid,
     }
     try:
-        r = requests.get(CONSULTA, params=params, timeout=timeout)
+        r = _HTTP.get(CONSULTA, params=params, timeout=timeout)
         r.raise_for_status()
         data = r.json()
     except Exception as exc:
