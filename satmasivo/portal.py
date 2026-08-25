@@ -610,10 +610,14 @@ def _search_once(
             if item[1] not in seen_pages:
                 queue.append(item)
     fmap = extract_folio_map(blob)
+    extra_links = extract_accion_urls(blob)
+    hrefs.extend(extra_links)
     if fmap:
         uuids = list(dict.fromkeys(list(fmap) + uuids))
         hrefs = list(dict.fromkeys(list(fmap.values()) + hrefs))
-    return list(dict.fromkeys(uuids)), list(dict.fromkeys(hrefs)), last, fields, fmap
+    else:
+        hrefs = list(dict.fromkeys(hrefs))
+    return list(dict.fromkeys(uuids)), hrefs, last, fields, fmap
 
 
 def descargar_con_sesion(
@@ -646,6 +650,22 @@ def descargar_con_sesion(
     hrefs: list[str] = []
     folio_href: dict[str, str] = {}
     last_html = ""
+    written: list[Path] = []
+    have: set[str] = set()
+
+    def mark(got: Path) -> None:
+        uid = got.stem.upper()
+        if uid not in have:
+            written.append(got)
+            have.add(uid)
+        note(
+            phase="xml",
+            done=len(have),
+            total=max(len(uuids), len(have), 1),
+            uuid=uid,
+            ok=True,
+            msg=f"{len(have)} XML  {uid}",
+        )
     days = _days(fecha_ini, fecha_fin)
     ndays = len(days)
     for i, day in enumerate(days, 1):
@@ -671,7 +691,9 @@ def descargar_con_sesion(
         uuids.extend(u)
         hrefs.extend(h)
         folio_href.update(fmap)
-        if u or h or fmap:
+        day_links = list(dict.fromkeys([x for x in list(fmap.values()) + h if x]))
+        found = len(u) or len(fmap) or len(day_links)
+        if found:
             note(
                 phase="consulta",
                 day=str(day),
@@ -679,87 +701,48 @@ def descargar_con_sesion(
                 days=ndays,
                 done=i,
                 total=ndays,
-                found=len(u) or len(fmap),
-                msg=f"{day}: {len(u) or len(fmap)} folios",
+                found=found,
+                msg=f"{day}: {found} folios, {len(day_links)} ligas",
             )
+        for j, link in enumerate(day_links, 1):
+            note(
+                phase="xml",
+                done=len(have),
+                total=max(found, 1),
+                ok=False,
+                msg=f"{day}  {j}/{len(day_links)} ligas · {len(have)} XML",
+            )
+            try:
+                got = download_url(sess, link, dest, referer=url)
+            except Exception:
+                got = None
+            if got:
+                mark(got)
 
     if extra_html:
-        folio_href.update(extract_folio_map(extra_html))
         u2, h2 = extract_download_targets(extra_html)
         uuids.extend(u2)
-        hrefs.extend(h2)
+        for link in h2:
+            try:
+                got = download_url(sess, link, dest, referer=url)
+            except Exception:
+                got = None
+            if got:
+                mark(got)
     if extra_hrefs:
-        hrefs.extend(extra_hrefs)
+        for link in extra_hrefs:
+            try:
+                got = download_url(sess, link, dest, referer=url)
+            except Exception:
+                got = None
+            if got:
+                mark(got)
+
     uuids = list(dict.fromkeys(u.upper() for u in uuids))
-    hrefs = list(dict.fromkeys(hrefs))
-    used_href = set(folio_href.values())
-    for href in hrefs:
-        if href in used_href:
-            continue
-        found = UUID_RE.search(href)
-        key = found.group(0).upper() if found else f"HREF:{href}"
-        folio_href.setdefault(key, href)
-    missing_uuids = [u for u in uuids if u not in folio_href]
-    total_jobs = len(folio_href) + len(missing_uuids)
-    written: list[Path] = []
-    have: set[str] = set()
-    referer = url
-
-    def mark(got: Path) -> None:
-        uid = got.stem.upper()
-        if uid not in have:
-            written.append(got)
-            have.add(uid)
-        note(
-            phase="xml",
-            done=len(have),
-            total=max(total_jobs, 1),
-            uuid=uid,
-            ok=True,
-            msg=f"{len(have)}/{total_jobs}  {uid}",
-        )
-
-    if total_jobs == 0:
+    if not written:
         snippet = re.sub(r"\s+", " ", last_html or "")[:180]
         raise SatError(
-            f"Sesión SAT viva, pero el portal no soltó XML "
-            f"({len(uuids)} UUID, {len(hrefs)} ligas). {snippet}"
+            f"No bajó ningún XML ({len(uuids)} folios en la búsqueda). {snippet}"
         )
-
-    queue: list[tuple[str, str]] = []
-    for uid, href in folio_href.items():
-        queue.append((uid, href))
-    for uid in missing_uuids:
-        queue.append((uid, urljoin(PORTAL, f"RecuperaCfdi.aspx?folioFiscal={uid}")))
-
-    note(phase="xml", done=0, total=total_jobs, msg=f"Detectados {total_jobs}. Bajando uno por uno.")
-    failed: list[str] = []
-    for i, (uid, href) in enumerate(queue, 1):
-        note(
-            phase="xml",
-            done=len(have),
-            total=total_jobs,
-            uuid=uid if not uid.startswith("HREF:") else "",
-            ok=False,
-            msg=f"XML {i}/{total_jobs}" + (f"  {uid}" if uid and not uid.startswith("HREF:") else ""),
-        )
-        got = None
-        try:
-            got = download_url(sess, href, dest, referer=referer)
-        except Exception:
-            got = None
-        if got:
-            mark(got)
-        else:
-            failed.append(uid or href)
-    if failed and not written:
-        raise SatError(
-            f"Se detectaron {total_jobs} y no bajó ninguno. "
-            f"La sesión del portal no soltó XML. Entra otra vez y reintenta."
-        )
-    if failed:
-        raise SatError(
-            f"Se detectaron {total_jobs} y bajaron {len(have)}. Quedan {len(failed)}."
-        )
-    note(phase="listo", done=len(have), total=total_jobs, msg=f"{len(have)}/{total_jobs} XML listos")
+    note(phase="listo", done=len(written), total=max(len(uuids), len(written)), msg=f"{len(written)} XML listos")
     return written

@@ -717,7 +717,10 @@ class SatMasivoApp(tk.Tk):
 
             rows = validar_rows(rows, progress=on_val)
         if rows:
-            export_excel(rows, root / "reporte.xlsx", rfc_firma=rfc)
+            try:
+                export_excel(rows, root / "reporte.xlsx", rfc_firma=rfc)
+            except Exception as exc:
+                return f"{extra}{len(rows)} XML. Excel no se pudo armar: {exc}\n{root}"
         return f"{extra}{len(rows)} comprobantes\n{root}"
 
     def _job_check_update(self) -> str:
