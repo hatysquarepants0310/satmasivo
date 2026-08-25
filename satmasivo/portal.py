@@ -26,6 +26,50 @@ UA = (
 )
 
 
+class _InputParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action = ""
+        self.fields: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        ad = {k.lower(): (v or "") for k, v in attrs}
+        if tag.lower() == "form" and not self.action:
+            self.action = ad.get("action", "")
+        if tag.lower() != "input":
+            return
+        name = ad.get("name")
+        if name:
+            self.fields[name] = ad.get("value", "")
+
+
+def _maybe_buscar(sess, sentido: str, html: str, fecha_ini: str, fecha_fin: str) -> str:
+    if not fecha_ini and not fecha_fin:
+        return html
+    p = _InputParser()
+    p.feed(html or "")
+    if not p.fields:
+        return html
+    data = dict(p.fields)
+    ini = fecha_ini.replace("-", "/")
+    fin = fecha_fin.replace("-", "/")
+    for key in list(data):
+        low = key.lower()
+        if "fechainicial" in low or "fecha_inicial" in low or low.endswith("fini"):
+            data[key] = ini
+        if "fechafinal" in low or "fecha_final" in low or low.endswith("ffin"):
+            data[key] = fin
+    if "__EVENTTARGET" in data and not data["__EVENTTARGET"]:
+        data["__EVENTTARGET"] = "ctl00$MainContent$BtnBusqueda"
+    url = CONSULTA.get(sentido, CONSULTA["recibidas"])
+    if p.action:
+        url = urljoin(url, p.action)
+    r = sess.post(url, data=data, timeout=60, allow_redirects=True)
+    if r.status_code == 200 and r.content:
+        return r.text
+    return html
+
+
 class _LinkParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -122,18 +166,23 @@ def probe_session(sess: requests.Session, sentido: str) -> str:
 
 
 def descargar_con_sesion(
-    cookies: list[tuple[str, str, str, str]],
+    cookies: list[tuple[str, str, str, str]] | None = None,
     *,
     sentido: str,
     dest: Path,
     extra_html: str = "",
     extra_hrefs: list[str] | None = None,
+    sess=None,
+    fecha_ini: str = "",
+    fecha_fin: str = "",
 ) -> list[Path]:
-    if not cookies:
-        raise SatError("La ventana no entregó cookies del SAT. Recarga e inicia sesión.")
     dest.mkdir(parents=True, exist_ok=True)
-    sess = session_from_cookies(cookies)
+    if sess is None:
+        if not cookies:
+            raise SatError("La ventana no entregó cookies del SAT. Recarga e inicia sesión.")
+        sess = session_from_cookies(cookies)
     html = probe_session(sess, sentido)
+    html = _maybe_buscar(sess, sentido, html, fecha_ini, fecha_fin)
     uuids, hrefs = extract_download_targets(html)
     if extra_html:
         u2, h2 = extract_download_targets(extra_html)

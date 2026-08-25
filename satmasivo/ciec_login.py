@@ -1,10 +1,12 @@
-"""Login CIEC al SAT: portal → POST JS → formulario real. No usa WebKit."""
+"""Login CIEC al SAT: portal → POST credencial → WS-Fed → portalcfdi."""
 
 from __future__ import annotations
 
 import base64
 import re
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from urllib.parse import urljoin
 
 from satmasivo.http import sat_session
 from satmasivo.sat_ws import SatError
@@ -32,6 +34,56 @@ def looks_like_login(html: str) -> bool:
     return "Ecom_User_ID" in (html or "") and "userCaptcha" in (html or "")
 
 
+class _FormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.action = ""
+        self.method = "get"
+        self.fields: dict[str, str] = {}
+        self._in_form = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        ad = {k.lower(): (v or "") for k, v in attrs}
+        if tag.lower() == "form" and not self._in_form:
+            self._in_form = True
+            self.action = ad.get("action", "")
+            self.method = (ad.get("method") or "get").lower()
+            return
+        if not self._in_form or tag.lower() != "input":
+            return
+        name = ad.get("name")
+        if not name:
+            return
+        self.fields[name] = ad.get("value", "")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "form":
+            self._in_form = False
+
+
+def parse_auto_form(html: str) -> tuple[str, str, dict[str, str]] | None:
+    p = _FormParser()
+    p.feed(html or "")
+    names = {n.lower() for n in p.fields}
+    if "wresult" in names or "wa" in names or "samlresponse" in names:
+        return p.action, p.method, p.fields
+    return None
+
+
+def logged_in_portal(html: str, final_url: str) -> bool:
+    url = (final_url or "").lower()
+    if "cfdiau.sat.gob.mx" in url or "/nidp/" in url:
+        return False
+    if "portalcfdi.facturaelectronica.sat.gob.mx" not in url:
+        return False
+    if looks_like_login(html):
+        return False
+    low = (html or "").lower()
+    if "rfc" in low and "contraseña" in low and "captcha" in low:
+        return False
+    return True
+
+
 @dataclass
 class CiecClient:
     rfc: str = ""
@@ -43,14 +95,44 @@ class CiecClient:
     def start(self) -> bytes:
         self.sess.get(PORTAL, timeout=40, allow_redirects=True)
         r = self.sess.post(LOGIN_POST, data={}, timeout=40, allow_redirects=True)
-        if not r.content or looks_like_login(r.text) is False and len(r.content) < 200:
-            # a veces el primer GET a portal ya deja el jsp; el POST es el login
-            if not looks_like_login(r.text):
-                raise SatError(
-                    f"El SAT no entregó el login ({r.status_code}, {len(r.content)} bytes)."
-                )
+        if not looks_like_login(r.text):
+            r = self.sess.get(LOGIN_POST, timeout=40, allow_redirects=True)
+        if not looks_like_login(r.text):
+            raise SatError(
+                f"El SAT no entregó el login ({r.status_code}, {len(r.content)} bytes)."
+            )
         self.captcha = extract_captcha(r.text)
         return self.captcha
+
+    def _follow_wsfed(self, html: str, current_url: str) -> None:
+        for _ in range(6):
+            parsed = parse_auto_form(html)
+            if not parsed:
+                break
+            action, method, fields = parsed
+            if not action:
+                break
+            url = urljoin(current_url, action)
+            if method == "get":
+                r = self.sess.get(url, params=fields, timeout=40, allow_redirects=True)
+            else:
+                r = self.sess.post(url, data=fields, timeout=40, allow_redirects=True)
+            html = r.text
+            current_url = r.url
+            if logged_in_portal(html, current_url):
+                return
+        r = self.sess.get(PORTAL, timeout=40, allow_redirects=True)
+        if not logged_in_portal(r.text, r.url):
+            if looks_like_login(r.text):
+                try:
+                    self.captcha = extract_captcha(r.text)
+                except SatError:
+                    self.captcha = b""
+                raise SatError("RFC, contraseña o captcha incorrectos.")
+            raise SatError(
+                "El SAT aceptó el login pero no abrió el portal. "
+                "Reintenta Home o usa e.firma."
+            )
 
     def login(self, rfc: str, password: str, captcha: str) -> str:
         rfc = rfc.strip().upper()
@@ -71,6 +153,7 @@ class CiecClient:
             except SatError:
                 self.captcha = b""
             raise SatError("RFC, contraseña o captcha incorrectos.")
+        self._follow_wsfed(r.text, r.url)
         self.rfc = rfc
         return rfc
 

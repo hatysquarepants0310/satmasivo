@@ -6,7 +6,8 @@ import os
 import sys
 import threading
 import traceback
-from datetime import datetime
+from datetime import date, datetime
+from calendar import monthrange
 from io import BytesIO
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -44,6 +45,84 @@ def _png_bytes(data: bytes) -> bytes:
 def _photo_from_bytes(data: bytes) -> tk.PhotoImage:
     """Pinta el captcha sin python3-pil.imagetk (ImageTk no viene en python3-pil)."""
     return tk.PhotoImage(data=_png_bytes(data))
+
+
+MESES = (
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+)
+
+
+def pick_date(parent, var: tk.StringVar) -> None:
+    try:
+        cur = datetime.strptime(var.get().strip(), "%Y-%m-%d").date()
+    except ValueError:
+        cur = date.today()
+    pop = tk.Toplevel(parent)
+    pop.title("Fecha")
+    pop.transient(parent)
+    pop.resizable(False, False)
+    state = {"y": cur.year, "m": cur.month}
+    head = tk.Frame(pop)
+    head.pack(fill=tk.X, padx=6, pady=4)
+    title = tk.Label(head, font=("Segoe UI", 10, "bold"))
+    title.pack(side=tk.LEFT, expand=True)
+    gridf = tk.Frame(pop)
+    gridf.pack(padx=6, pady=4)
+
+    def paint() -> None:
+        for w in gridf.winfo_children():
+            w.destroy()
+        title.configure(text=f"{MESES[state['m'] - 1]} {state['y']}")
+        for i, dname in enumerate(("Lu", "Ma", "Mi", "Ju", "Vi", "Sa", "Do")):
+            tk.Label(gridf, text=dname, width=3, fg="#555").grid(row=0, column=i)
+        first = date(state["y"], state["m"], 1).weekday()
+        days = monthrange(state["y"], state["m"])[1]
+        r = 1
+        c = first
+        for day in range(1, days + 1):
+            d = day
+
+            def choose(dd=d, yy=state["y"], mm=state["m"]):
+                var.set(f"{yy:04d}-{mm:02d}-{dd:02d}")
+                pop.destroy()
+
+            tk.Button(gridf, text=str(d), width=3, command=choose).grid(row=r, column=c)
+            c += 1
+            if c > 6:
+                c = 0
+                r += 1
+
+    def prev() -> None:
+        if state["m"] == 1:
+            state["m"] = 12
+            state["y"] -= 1
+        else:
+            state["m"] -= 1
+        paint()
+
+    def nxt() -> None:
+        if state["m"] == 12:
+            state["m"] = 1
+            state["y"] += 1
+        else:
+            state["m"] += 1
+        paint()
+
+    ttk.Button(head, text="<", width=3, command=prev).pack(side=tk.LEFT)
+    ttk.Button(head, text=">", width=3, command=nxt).pack(side=tk.RIGHT)
+    paint()
+    pop.grab_set()
 
 
 class SatMasivoApp(tk.Tk):
@@ -327,8 +406,14 @@ class SatMasivoApp(tk.Tk):
         row(1, ".key", e_key)
         ttk.Button(grid, text="…", width=3, command=lambda: key.set(filedialog.askopenfilename(filetypes=[("KEY", "*.key")]) or key.get())).grid(row=1, column=2)
         row(2, "Contraseña FIEL", e_pwd)
-        row(3, "Fecha inicial", ttk.Entry(grid, textvariable=ini))
-        row(4, "Fecha final", ttk.Entry(grid, textvariable=fin))
+        e_ini = ttk.Entry(grid, textvariable=ini)
+        e_fin = ttk.Entry(grid, textvariable=fin)
+        row(3, "Fecha inicial", e_ini)
+        ttk.Button(grid, text="…", width=3, command=lambda: pick_date(win, ini)).grid(row=3, column=2)
+        row(4, "Fecha final", e_fin)
+        ttk.Button(grid, text="…", width=3, command=lambda: pick_date(win, fin)).grid(row=4, column=2)
+        e_ini.bind("<Button-1>", lambda *_: pick_date(win, ini))
+        e_fin.bind("<Button-1>", lambda *_: pick_date(win, fin))
         cb_tipo = ttk.Combobox(grid, textvariable=tipo, values=("CFDI", "Metadata"), state="readonly")
         cb_est = ttk.Combobox(grid, textvariable=estado, values=("Todos", "Vigente", "Cancelado"), state="readonly")
         row(5, "Tipo (e.firma)", cb_tipo)
@@ -373,8 +458,7 @@ class SatMasivoApp(tk.Tk):
             if not self._logged_rfc:
                 messagebox.showerror("Error", "Entra en Home primero.")
                 return
-            cookies = self.ciec.cookie_tuples()
-            self._run_bg("Descargando con sesión SAT…", lambda: self._job_descarga_ciec(args, cookies))
+            self._run_bg("Descargando con sesión SAT…", lambda: self._job_descarga_ciec(args))
 
         ttk.Button(win, text="Descargar", command=ok).pack(pady=10)
 
@@ -488,9 +572,15 @@ class SatMasivoApp(tk.Tk):
             extraer_zip(blob, str(dest))
         return self._finish_rows(dest, args["validar"], fiel.rfc, extra=f"Solicitud {sol.id_solicitud}\n")
 
-    def _job_descarga_ciec(self, args: dict, cookies: list) -> str:
+    def _job_descarga_ciec(self, args: dict) -> str:
         dest = Path(args["dest"]) / "sesion-sat" / args["sentido"] / args["ini"]
-        files = descargar_con_sesion(cookies, sentido=args["sentido"], dest=dest)
+        files = descargar_con_sesion(
+            sess=self.ciec.sess,
+            sentido=args["sentido"],
+            dest=dest,
+            fecha_ini=args["ini"],
+            fecha_fin=args["fin"],
+        )
         return self._finish_rows(
             dest, args["validar"], self._logged_rfc, extra=f"{len(files)} XML por sesión SAT\n"
         )

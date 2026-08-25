@@ -1,4 +1,4 @@
-from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login
+from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form
 from satmasivo.portal import extract_download_targets, looks_like_xml, logged_in
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
@@ -56,6 +56,25 @@ def test_sat_login_tls():
         allow_redirects=True,
     )
     assert r.status_code == 200
+
+
+def test_parse_wsfed_form():
+    html = """
+    <html><body>
+    <form action="https://portalcfdi.facturaelectronica.sat.gob.mx/" method="POST">
+    <input type="hidden" name="wa" value="wsignin1.0">
+    <input type="hidden" name="wresult" value="<t:RequestSecurityTokenResponse/>">
+    <input type="submit" value="Continue">
+    </form></body></html>
+    """
+    parsed = parse_auto_form(html)
+    assert parsed is not None
+    action, method, fields = parsed
+    assert "portalcfdi" in action
+    assert method == "post"
+    assert fields["wa"] == "wsignin1.0"
+    assert "wresult" in fields
+    assert parse_auto_form("<html><form><input name=x></form></html>") is None
 
 
 def test_extract_captcha_and_live_start():
