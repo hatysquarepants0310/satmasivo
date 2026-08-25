@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SAT Masivo
+Comment=Descarga masiva de CFDI del SAT
+Exec=satmasivo
+Icon=satmasivo
+Terminal=false
+Categories=Office;Finance;
+StartupNotify=true

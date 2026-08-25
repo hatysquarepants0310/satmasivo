@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+    xmlns:pago20="http://www.sat.gob.mx/Pagos20"
+    xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
+    Version="4.0" Fecha="2026-02-01T09:00:00" Folio="P-1"
+    SubTotal="0" Total="0" Moneda="XXX" TipoDeComprobante="P"
+    LugarExpedicion="55700">
+  <cfdi:Emisor Rfc="XAXX010101000" Nombre="PUBLICO EN GENERAL"/>
+  <cfdi:Receptor Rfc="EKU9003173C9" Nombre="ESCUELA KEMPER URGATE" UsoCFDI="CP01"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="84111506" Cantidad="1" ClaveUnidad="ACT"
+        Descripcion="Pago" ValorUnitario="0" Importe="0"/>
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <pago20:Pagos Version="2.0"/>
+    <tfd:TimbreFiscalDigital UUID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        FechaTimbrado="2026-02-01T09:01:00" RfcProvCertif="SAT970701NN3"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>
