@@ -10,7 +10,7 @@ Al abrir, las dos versiones buscan el último release y se actualizan solas si h
 
 ```bash
 # Ubuntu
-sudo apt install ./satmasivo_1.5.21_all.deb
+sudo apt install ./satmasivo_1.5.22_all.deb
 satmasivo
 ```
 

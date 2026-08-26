@@ -225,13 +225,13 @@ def save_token(token: str) -> None:
     save_config(cfg)
 
 
-def check_latest(current: str | None = None) -> Release | None:
+def check_latest(current: str | None = None, timeout: float = 8) -> Release | None:
     current = current or __version__
     headers = {"Accept": "application/vnd.github+json"}
     token = _token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = requests.get(API, headers=headers, timeout=20)
+    r = requests.get(API, headers=headers, timeout=timeout)
     if r.status_code in {401, 403, 404}:
         raise PermissionError(
             "Repo privado: pega un token de GitHub (contents:read) "

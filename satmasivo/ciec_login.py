@@ -24,11 +24,17 @@ AUTH_CIEC = (
     "https://cfdiau.sat.gob.mx/nidp/wsfed/ep"
     "?id=SATUPCFDiCon&sid=0&option=credential&sid=0"
 )
-TIMEOUT = (15, 40)
+TIMEOUT = (8, 25)
+TIMEOUT_START = (6, 18)
+LOGIN_URLS = (AUTH_CIEC, AUTH_LOGIN, PORTAL)
 CAPTCHA_RE = re.compile(
     r"data:image/(?:jpeg|jpg|png|gif);base64,([A-Za-z0-9+/=\s]+)",
     re.I,
 )
+
+
+def normalize_captcha(text: str) -> str:
+    return (text or "").strip().upper()
 
 
 def extract_captcha(html: str) -> bytes:
@@ -148,9 +154,9 @@ class CiecClient:
         with self._lock:
             self._new_sess()
             last = None
-            for url in (PORTAL, AUTH_CIEC, AUTH_LOGIN):
+            for url in LOGIN_URLS:
                 try:
-                    r = self.sess.get(url, timeout=TIMEOUT, allow_redirects=True)
+                    r = self.sess.get(url, timeout=TIMEOUT_START, allow_redirects=True)
                     last = r
                     if looks_like_login(r.text):
                         self.captcha = extract_captcha(r.text)
@@ -198,7 +204,7 @@ class CiecClient:
                 "submit": "Enviar",
                 "Ecom_User_ID": rfc,
                 "Ecom_Password": password,
-                "userCaptcha": captcha.strip(),
+                "userCaptcha": normalize_captcha(captcha),
             }
             self._fresh_socket()
             try:

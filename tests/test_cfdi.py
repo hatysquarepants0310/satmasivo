@@ -47,6 +47,8 @@ def test_scan_and_excel(tmp_path):
     headers = [c.value for c in wb["Resumen"][1]]
     assert headers == RESUMEN_COLS
     assert wb["Resumen"]["C2"].value in {"I", "P"}
+    for name in wb.sheetnames:
+        assert not wb[name].auto_filter.ref
 
 
 def test_pdf(tmp_path):

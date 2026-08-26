@@ -6,7 +6,6 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from satmasivo.cfdi import CfdiRow, format_fecha_masiva, regimen_label
@@ -189,7 +188,6 @@ def _money_tipo(row: CfdiRow, value):
 
 def _write_header(ws: Worksheet, titles: list[str]) -> None:
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(titles))}1"
     for col, title in enumerate(titles, 1):
         cell = ws.cell(1, col, title)
         cell.fill = HEADER_FILL

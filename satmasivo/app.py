@@ -147,6 +147,7 @@ class SatMasivoApp(tk.Tk):
         self._build()
         self._mark("home")
         self.after(200, self._reload_captcha)
+        self.after(400, self._startup_update)
 
     def _build(self) -> None:
         bar = tk.Frame(self, bg=BLUE, padx=8, pady=8)
@@ -259,7 +260,18 @@ class SatMasivoApp(tk.Tk):
         ttk.Button(grid, text="Enviar", command=self.on_login).grid(row=4, column=1, sticky="w", pady=10)
         self.lbl_login = tk.Label(grid, text="", bg="white", fg="#a33", wraplength=360, justify=tk.LEFT)
         self.lbl_login.grid(row=5, column=1, sticky="w")
+        self.ent_cap.bind("<KeyRelease>", self._cap_upper)
         self.ent_cap.bind("<Return>", lambda *_: self.on_login())
+
+    def _cap_upper(self, _evt=None) -> None:
+        val = self.ent_cap.get()
+        up = val.upper()
+        if val == up:
+            return
+        pos = self.ent_cap.index(tk.INSERT)
+        self.ent_cap.delete(0, tk.END)
+        self.ent_cap.insert(0, up)
+        self.ent_cap.icursor(pos)
 
     def _mark(self, which: str) -> None:
         mapping = {"home": self.btn_home, "recibidas": self.btn_rec, "emitidas": self.btn_emi}
@@ -355,7 +367,10 @@ class SatMasivoApp(tk.Tk):
     def on_login(self) -> None:
         rfc = self.ent_rfc.get().strip()
         pwd = self.ent_pwd.get()
-        cap = self.ent_cap.get().strip()
+        cap = self.ent_cap.get().strip().upper()
+        if cap != self.ent_cap.get():
+            self.ent_cap.delete(0, tk.END)
+            self.ent_cap.insert(0, cap)
         if not rfc or not pwd or not cap:
             self.lbl_login.configure(text="Llena RFC, contraseña y captcha.")
             return
@@ -572,6 +587,26 @@ class SatMasivoApp(tk.Tk):
     def on_actualizar(self) -> None:
         self._run_bg("Buscando actualización…", self._job_check_update)
 
+    def _startup_update(self) -> None:
+        def work() -> None:
+            from satmasivo.update import apply_update, check_latest, is_packaged
+
+            if not is_packaged():
+                return
+            try:
+                rel = check_latest()
+            except Exception:
+                return
+            if not rel or self._login_busy or self._busy:
+                return
+            try:
+                apply_update(rel)
+            except Exception:
+                return
+            self._ui(self._done, True, "__RESTART__")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _ask_token(self) -> str | None:
         win = tk.Toplevel(self)
         win.title("Token de GitHub")
@@ -743,9 +778,9 @@ class SatMasivoApp(tk.Tk):
 
 def main() -> None:
     try:
-        from satmasivo.update import bootstrap
+        from satmasivo.update import ensure_windows_install
 
-        if bootstrap():
+        if ensure_windows_install():
             return
         app = SatMasivoApp()
         app.mainloop()

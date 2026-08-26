@@ -1,7 +1,18 @@
-from satmasivo.ciec_login import CiecClient, extract_captcha, looks_like_login, parse_auto_form, parse_login_form
+from satmasivo.ciec_login import AUTH_CIEC, CiecClient, LOGIN_URLS, PORTAL, extract_captcha, looks_like_login, normalize_captcha, parse_auto_form, parse_login_form
 from satmasivo.portal import date_filters, descargar_con_sesion, extract_accion_urls, extract_download_targets, extract_folio_map, extract_result_pages, extract_table_rows, html_from_delta, keep_xml, looks_like_xml, logged_in, parse_sat_delta, plan_xml_jobs, query_filters
 from satmasivo.tlsenv import OPENSSL_CIPHERS, apply, is_sat_host
 from satmasivo.update import is_newer, parse_version
+
+
+def test_captcha_siempre_mayusculas():
+    assert normalize_captcha(" ab12xy ") == "AB12XY"
+    assert normalize_captcha("Ño") == "ÑO"
+    assert normalize_captcha("") == ""
+
+
+def test_login_urls_auth_primero():
+    assert LOGIN_URLS[0] == AUTH_CIEC
+    assert LOGIN_URLS[-1] == PORTAL
 
 
 def test_extract_uuids_and_recupera():
@@ -63,6 +74,7 @@ def test_tls_apply_sets_gnutls(monkeypatch):
     assert is_sat_host("cfdiau.sat.gob.mx")
     assert is_sat_host("portalcfdi.facturaelectronica.sat.gob.mx")
     assert not is_sat_host("evil.example")
+    assert getattr(__import__("socket").getaddrinfo, "_satmasivo_v4", False)
 
 
 def test_sat_login_tls():
