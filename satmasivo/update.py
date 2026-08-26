@@ -1,4 +1,4 @@
-"""Revisa releases de GitHub e instala .deb (Linux) o .exe (Windows)."""
+"""Revisa releases de GitHub. Linux: apt del .deb. Windows: instala en el usuario y reemplaza ese .exe."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from satmasivo.config import load_config, save_config
 
 REPO = "hatysquarepants0310/satmasivo"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
+WIN_APP_NAME = "SAT Masivo"
+WIN_EXE_NAME = "satmasivo.exe"
 
 
 def _cache_dir() -> Path:
@@ -27,6 +29,10 @@ def _cache_dir() -> Path:
 
 
 CACHE = _cache_dir()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 @dataclass
@@ -55,7 +61,139 @@ def is_newer(remote: str, current: str) -> bool:
 
 
 def wanted_kind() -> str:
-    return "exe" if os.name == "nt" else "deb"
+    return "exe" if _is_windows() else "deb"
+
+
+def is_packaged() -> bool:
+    """True en el .deb instalado o en el .exe frozen. El checkout de git no auto-actualiza."""
+    if _is_windows():
+        return bool(getattr(sys, "frozen", False))
+    here = Path(__file__).resolve()
+    if "/usr/lib/satmasivo" in str(here):
+        return True
+    try:
+        argv0 = Path(sys.argv[0]).resolve()
+    except (OSError, RuntimeError):
+        return False
+    return argv0 == Path("/usr/bin/satmasivo")
+
+
+def pick_asset(data: dict, kind: str) -> tuple[str, str]:
+    suffix = ".exe" if kind == "exe" else ".deb"
+    for asset in data.get("assets") or []:
+        name = str(asset.get("name") or "")
+        if name.lower().endswith(suffix):
+            url = str(asset.get("url") or "")
+            if url:
+                return name, url
+    return "", ""
+
+
+def win_install_dir() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return base / "Programs" / "SATMasivo"
+
+
+def win_installed_exe() -> Path:
+    return win_install_dir() / WIN_EXE_NAME
+
+
+def win_start_menu_lnk() -> Path:
+    roaming = Path(os.environ.get("APPDATA") or Path.home())
+    return roaming / "Microsoft" / "Windows" / "Start Menu" / "Programs" / f"{WIN_APP_NAME}.lnk"
+
+
+def win_desktop_dir() -> Path:
+    for key in ("USERPROFILE", "HOME"):
+        base = os.environ.get(key)
+        if not base:
+            continue
+        for name in ("Desktop", "Escritorio"):
+            p = Path(base) / name
+            if p.is_dir():
+                return p
+    return Path.home() / "Desktop"
+
+
+def win_desktop_lnk() -> Path:
+    return win_desktop_dir() / f"{WIN_APP_NAME}.lnk"
+
+
+def _ps_quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def shortcut_ps(lnk: Path, target: Path) -> str:
+    return (
+        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut("
+        f"{_ps_quote(str(lnk))}); "
+        f"$s.TargetPath = {_ps_quote(str(target))}; "
+        f"$s.WorkingDirectory = {_ps_quote(str(target.parent))}; "
+        f"$s.Description = {_ps_quote(WIN_APP_NAME)}; "
+        "$s.Save()"
+    )
+
+
+def write_shortcut(lnk: Path, target: Path) -> None:
+    lnk.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            shortcut_ps(lnk, target),
+        ],
+        check=True,
+        timeout=30,
+        capture_output=True,
+        text=True,
+    )
+
+
+def ensure_start_menu(target: Path) -> None:
+    lnk = win_start_menu_lnk()
+    if lnk.is_file():
+        return
+    try:
+        write_shortcut(lnk, target)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+
+
+def _copy_into_install(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.resolve() == dest.resolve():
+        return
+    try:
+        shutil.copy2(src, dest)
+    except OSError:
+        if not dest.is_file():
+            raise
+
+
+def ensure_windows_install() -> bool:
+    """Copia el .exe a LocalAppData, deja acceso en Inicio y abre esa copia. True = salir."""
+    if not _is_windows() or not getattr(sys, "frozen", False):
+        return False
+    here = Path(sys.executable).resolve()
+    dest = win_installed_exe()
+    if here == dest.resolve() and dest.is_file():
+        ensure_start_menu(dest)
+        return False
+    _copy_into_install(here, dest)
+    if not dest.is_file():
+        raise RuntimeError("No se pudo instalar SAT Masivo")
+    try:
+        write_shortcut(win_start_menu_lnk(), dest)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+    try:
+        write_shortcut(win_desktop_lnk(), dest)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+    subprocess.Popen([str(dest)], close_fds=True)
+    return True
 
 
 def _token() -> str:
@@ -106,14 +244,8 @@ def check_latest(current: str | None = None) -> Release | None:
     if not is_newer(version, current):
         return None
     kind = wanted_kind()
+    asset_name, asset_url = pick_asset(data, kind)
     suffix = ".exe" if kind == "exe" else ".deb"
-    asset_url = asset_name = ""
-    for asset in data.get("assets") or []:
-        name = str(asset.get("name") or "")
-        if name.lower().endswith(suffix):
-            asset_url = str(asset.get("url") or "")
-            asset_name = name
-            break
     if not asset_url:
         raise RuntimeError(f"El release {tag} no trae {suffix}")
     return Release(
@@ -172,24 +304,48 @@ def install_deb(path: Path) -> None:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"apt exit {proc.returncode}")
 
 
-def install_exe(path: Path) -> None:
-    path = path.resolve()
-    target = Path(sys.executable) if getattr(sys, "frozen", False) else path
-    bat = path.with_suffix(".bat")
+def write_replace_bat(src: Path, dst: Path) -> Path:
+    """Espera a que suelte el .exe instalado y lo reemplaza. Relanza esa copia."""
+    bat = src.with_suffix(".bat")
+    src_s = str(src)
+    dst_s = str(dst)
     bat.write_text(
         "\r\n".join(
             [
                 "@echo off",
-                "timeout /t 2 /nobreak >nul",
-                f'move /y "{path}" "{target}"',
-                f'start "" "{target}"',
-                f'del "%~f0"',
+                "setlocal",
+                "set N=0",
+                ":retry",
+                "timeout /t 1 /nobreak >nul",
+                f'move /y "{src_s}" "{dst_s}"',
+                "if not errorlevel 1 goto ok",
+                "set /a N+=1",
+                "if %N% lss 30 goto retry",
+                "exit /b 1",
+                ":ok",
+                f'start "" "{dst_s}"',
+                'del "%~f0"',
                 "",
             ]
         ),
         encoding="utf-8",
     )
+    return bat
+
+
+def install_exe(path: Path, target: Path | None = None) -> None:
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    dest = (target or win_installed_exe()).resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    bat = write_replace_bat(path, dest)
     subprocess.Popen(["cmd", "/c", str(bat)], close_fds=True)
+
+
+def relaunch() -> None:
+    exe = shutil.which("satmasivo") or "/usr/bin/satmasivo"
+    os.execv(exe, [exe])
 
 
 def apply_update(rel: Release) -> None:
@@ -198,3 +354,35 @@ def apply_update(rel: Release) -> None:
         install_exe(dest)
     else:
         install_deb(dest)
+
+
+def bootstrap_update() -> bool:
+    """Al abrir: si hay release más nuevo, lo instala. True = este proceso debe salir."""
+    if not is_packaged():
+        return False
+    try:
+        rel = check_latest()
+    except Exception:
+        return False
+    if rel is None:
+        return False
+    try:
+        apply_update(rel)
+    except Exception:
+        return False
+    if not _is_windows():
+        try:
+            relaunch()
+        except Exception:
+            return False
+    return True
+
+
+def bootstrap() -> bool:
+    """Instala en Windows si hace falta, luego actualiza. True = este proceso debe salir."""
+    try:
+        if ensure_windows_install():
+            return True
+    except Exception:
+        pass
+    return bootstrap_update()

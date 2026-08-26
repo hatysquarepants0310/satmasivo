@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Onefile: al primer arranque se copia a %LOCALAPPDATA%\Programs\SATMasivo y deja acceso en Inicio.
 import os
 
 from PyInstaller.utils.hooks import collect_submodules

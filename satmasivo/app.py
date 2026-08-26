@@ -147,7 +147,6 @@ class SatMasivoApp(tk.Tk):
         self._build()
         self._mark("home")
         self.after(200, self._reload_captcha)
-        self.after(8000, self._silent_update_check)
 
     def _build(self) -> None:
         bar = tk.Frame(self, bg=BLUE, padx=8, pady=8)
@@ -573,17 +572,6 @@ class SatMasivoApp(tk.Tk):
     def on_actualizar(self) -> None:
         self._run_bg("Buscando actualización…", self._job_check_update)
 
-    def _silent_update_check(self) -> None:
-        def work():
-            try:
-                rel = check_latest()
-            except Exception:
-                return
-            if rel:
-                self._ui(self.status.set, f"Hay {rel.tag} disponible. Pulsa Actualizar.")
-
-        threading.Thread(target=work, daemon=True).start()
-
     def _ask_token(self) -> str | None:
         win = tk.Toplevel(self)
         win.title("Token de GitHub")
@@ -628,6 +616,13 @@ class SatMasivoApp(tk.Tk):
         self.status.set("Listo" if ok else "Error")
         if msg == "__RESTART__":
             self.destroy()
+            if os.name != "nt":
+                from satmasivo.update import relaunch
+
+                try:
+                    relaunch()
+                except Exception:
+                    pass
             return
         if msg == "__NEED_TOKEN__":
             if self._ask_token():
@@ -748,6 +743,10 @@ class SatMasivoApp(tk.Tk):
 
 def main() -> None:
     try:
+        from satmasivo.update import bootstrap
+
+        if bootstrap():
+            return
         app = SatMasivoApp()
         app.mainloop()
     except Exception as exc:
